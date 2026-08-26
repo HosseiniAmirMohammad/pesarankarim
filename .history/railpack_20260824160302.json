@@ -1,0 +1,14 @@
+{
+  "build": {
+    "aptPackages": [],
+    "packages": {
+      "python": "3.10"
+    }
+  },
+  "deploy": {
+    "startCommand": "python pesarankarim.py",
+    "variables": {
+      "PYTHONUNBUFFERED": "1"
+    }
+  }
+}

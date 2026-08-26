@@ -40,80 +40,16 @@ def make_keyboard(buttons, row_width=2):
 
 
 def persian_to_english_numbers(text):
-    if text is None:
-        return ""
     persian_numbers = "۰۱۲۳۴۵۶۷۸۹"
     english_numbers = "0123456789"
     translation_table = str.maketrans(persian_numbers, english_numbers)
-    return str(text).translate(translation_table)
+    return text.translate(translation_table)
 
 
 def normalize_phone_number(phone):
-    if phone is None:
-        return ""
-    clean = persian_to_english_numbers(phone)
-    clean = re.sub(r"\D", "", clean)
-    if clean.startswith("98") and len(clean) == 12:
-        clean = "0" + clean[2:]
-    if clean.startswith("0") and len(clean) > 11:
-        clean = clean[:11]
-    return clean
-
-
-def normalize_photo_code(code):
-    if code is None:
-        return ""
-    clean = persian_to_english_numbers(code)
-    clean = re.sub(r"\D", "", clean)
-    return clean
-
-
-def extract_phone_and_code(raw_text):
-    if raw_text is None:
-        return "", ""
-
-    text = str(raw_text).strip()
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-
-    if len(lines) >= 2:
-        first = normalize_phone_number(lines[0])
-        second = normalize_photo_code(lines[1])
-        if first and second:
-            return first, second
-
-    parts = re.split(r"[\s,|]+", text)
-    candidates = []
-    for part in parts:
-        cleaned = part.strip()
-        if not cleaned:
-            continue
-        number = normalize_phone_number(cleaned)
-        code = normalize_photo_code(cleaned)
-        if number and len(number) in (10, 11, 12):
-            candidates.append(("phone", number))
-        if code and len(code) == 4:
-            candidates.append(("code", code))
-
-    phone = ""
-    code = ""
-    for kind, value in candidates:
-        if kind == "phone" and len(value) == 11 and value.startswith("09"):
-            phone = value
-        elif kind == "code" and len(value) == 4:
-            code = value
-
-    if phone and code:
-        return phone, code
-
-    if text:
-        phone_match = re.search(r"(?:\+?98|0)[\d۰۱۲۳۴۵۶۷۸۹]{9,11}", persian_to_english_numbers(text))
-        if phone_match:
-            phone = normalize_phone_number(phone_match.group(0))
-        code_match = re.search(r"\b\d{4}\b|\b[۰۱۲۳۴۵۶۷۸۹]{4}\b", text)
-        if code_match:
-            code = normalize_photo_code(code_match.group(0))
-
-    return phone, code
+    phone = persian_to_english_numbers(phone)
+    phone = phone.replace(" ", "").replace("-", "").replace("+", "")
+    return phone
 
 
 async def real_member(context, user_id):
@@ -467,21 +403,28 @@ async def admin_preupload_phone_code(
         await admin_command(update, context)
         return
 
-    phone, photo_code = extract_phone_and_code(text)
+    parts = text.strip().split()
+
+    if len(parts) != 2:
+        await update.message.reply_text(
+            "❌ فرمت اشتباه!\n"
+            "لطفا شماره و کد را با فاصله وارد کنید:\n"
+            "(مثلاً `09123456789 1234`)",
+            parse_mode="Markdown",
+        )
+        return
+
+    phone = normalize_phone_number(parts[0])
+    photo_code = persian_to_english_numbers(parts[1])
 
     if not (phone.isdigit() and len(phone) == 11 and phone.startswith("09")):
         await update.message.reply_text(
-            "❌ شماره تلفن معتبر نیست!\n"
-            "لطفا شماره را به یکی از فرم‌های زیر وارد کنید:\n"
-            "مثلاً `09123456789` یا `۰۹۱۲۳۴۵۶۷۸۹`"
+            "❌ شماره تلفن معتبر نیست! باید 11 رقمی و با 09 شروع شود."
         )
         return
 
     if not (photo_code.isdigit() and len(photo_code) == 4):
-        await update.message.reply_text(
-            "❌ کد عکس باید 4 رقمی باشد.\n"
-            "مثلاً `1234` یا `۱۲۳۴`"
-        )
+        await update.message.reply_text("❌ کد عکس باید 4 رقمی باشد.")
         return
 
     context.user_data["preupload_phone"] = phone
@@ -1802,14 +1745,14 @@ async def handle_all_messages(update, context):
         return
 
     if context.user_data.get("photo_step") == "code":
-        code = normalize_photo_code(text)
+        code = persian_to_english_numbers(text)
         if code.isdigit() and len(code) == 4:
             context.user_data["photo_code"] = code
             context.user_data["photo_step"] = "phone"
             await update.message.reply_text(
                 f"کد عکس {code} ثبت شد✅\n\n"
                 "لطفا شماره تلفن 11 رقمی خود را وارد کنید:\n"
-                "(مثلا 09123456789 یا ۰۹۱۲۳۴۵۶۷۸۹)",
+                "(مثلا 09123456789)",
                 reply_markup=ReplyKeyboardMarkup([[BTN_BACK]], resize_keyboard=True),
                 parse_mode="Markdown",
             )
@@ -2030,22 +1973,28 @@ async def handle_group_photo(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     caption = update.message.caption or ""
-    phone, photo_code = extract_phone_and_code(caption)
+    lines = caption.strip().split("\n")
+
+    if len(lines) < 2:
+        await update.message.reply_text(
+            "فرمت کپشن اشتباه است❌\n\n"
+            "به این شکل بنویسید:\n\n"
+            "09123456789\n"
+            "1234"
+        )
+        return
+
+    phone = normalize_phone_number(lines[0].strip())
+    photo_code = persian_to_english_numbers(lines[1].strip())
 
     if not (phone.isdigit() and len(phone) == 11 and phone.startswith("09")):
         await update.message.reply_text(
-            "فرمت کپشن اشتباه است❌\n\n"
-            "شماره باید 11 رقمی باشد و با 09 شروع شود.\n"
-            "مثلاً: `09123456789` یا `۰۹۱۲۳۴۵۶۷۸۹`\n"
-            "و کد باید 4 رقمی باشد."
+            "شماره تلفن وارد شده معتبر نیست! شماره تلفن باید 11 رقمی باشد و با 09 شروع شود."
         )
         return
 
     if not (photo_code.isdigit() and len(photo_code) == 4):
-        await update.message.reply_text(
-            "کد عکس باید 4 رقمی باشد.\n"
-            "مثلاً: `1234` یا `۱۲۳۴`"
-        )
+        await update.message.reply_text("کد عکس باید 4 رقمی باشد.")
         return
 
     conn = get_db_connection()
