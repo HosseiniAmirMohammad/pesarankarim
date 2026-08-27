@@ -39,12 +39,6 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
 
-    def ensure_column(table_name, column_sql):
-        existing = c.execute(f"PRAGMA table_info({table_name})").fetchall()
-        column_name = column_sql.split()[0]
-        if not any(col[1] == column_name for col in existing):
-            c.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")
-
     # ===== ۱. جدول درخواست‌های عکس با فیلد branch =====
     c.execute("""CREATE TABLE IF NOT EXISTS photo_requests (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -123,14 +117,12 @@ def init_db():
         photo_code TEXT NOT NULL,
         branch TEXT NOT NULL DEFAULT 'mashhad',
         file_id TEXT NOT NULL,
-        file_type TEXT DEFAULT 'photo',
         admin_id INTEGER,
         message_id INTEGER,
         used BOOLEAN DEFAULT 0,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (admin_id) REFERENCES admins(user_id)
     )""")
-    ensure_column("preuploaded_photos", "file_type TEXT DEFAULT 'photo'")
 
     # ===== ۸. جدول بلاک‌شده‌ها =====
     c.execute("""CREATE TABLE IF NOT EXISTS blocked_users (
@@ -343,24 +335,23 @@ def is_super_admin(user_id):
 
 # ===== توابع عکس‌های پیش‌آپلود شده =====
 def save_preuploaded_photo(
-    phone, photo_code, branch, file_id, admin_id, message_id=None, file_type="photo"
+    phone, photo_code, branch, file_id, admin_id, message_id=None
 ):
     """ذخیره عکس آپلود شده توسط ادمین در گروه"""
     init_db()
     phone = normalize_phone_for_storage(phone)
     photo_code = normalize_code_for_storage(photo_code)
     branch = (branch or "mashhad").strip().lower()
-    file_type = (file_type or "photo").strip().lower()
 
     conn = get_db_connection()
     c = conn.cursor()
     try:
         c.execute(
             """
-            INSERT INTO preuploaded_photos (phone, photo_code, branch, file_id, file_type, admin_id, message_id, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            INSERT INTO preuploaded_photos (phone, photo_code, branch, file_id, admin_id, message_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         """,
-            (phone, photo_code, branch, file_id, file_type, admin_id, message_id),
+            (phone, photo_code, branch, file_id, admin_id, message_id),
         )
         conn.commit()
         return c.lastrowid
@@ -391,7 +382,7 @@ def get_preuploaded_photo(phone, photo_code, branch):
     placeholders = ", ".join("?" for _ in variants)
     c.execute(
         f"""
-        SELECT id, file_id, COALESCE(file_type, 'photo') AS file_type, message_id, created_at
+        SELECT id, file_id, message_id, created_at
         FROM preuploaded_photos 
         WHERE phone IN ({placeholders}) AND photo_code = ? AND branch = ? AND used = 0
         ORDER BY created_at DESC LIMIT 1

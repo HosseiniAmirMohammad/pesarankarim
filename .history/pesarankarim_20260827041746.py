@@ -142,56 +142,6 @@ async def real_member(context, user_id):
         return False
 
 
-async def send_preuploaded_file(context, chat_id, file_id, file_type=None):
-    file_type = (file_type or "photo").lower()
-    caption = "📸 عکس یادگاری شما\n\nاز اینکه رستوران پسران کریم را انتخاب کردید سپاسگزاریم🌹"
-
-    if file_type == "document":
-        try:
-            await context.bot.send_document(
-                chat_id=chat_id,
-                document=file_id,
-                caption=caption,
-                parse_mode="Markdown",
-            )
-            return True
-        except Exception as e:
-            print(f"❌ تلاش اول برای send_document ناموفق بود: {e}")
-            try:
-                await context.bot.send_photo(
-                    chat_id=chat_id,
-                    photo=file_id,
-                    caption=caption,
-                    parse_mode="Markdown",
-                )
-                return True
-            except Exception as second_error:
-                print(f"❌ هر دو روش ارسال عکس/فایل برای preuploaded ناموفق بود: {second_error}")
-                raise second_error
-
-    try:
-        await context.bot.send_photo(
-            chat_id=chat_id,
-            photo=file_id,
-            caption=caption,
-            parse_mode="Markdown",
-        )
-        return True
-    except Exception as e:
-        print(f"❌ تلاش اول برای send_photo ناموفق بود: {e}")
-        try:
-            await context.bot.send_document(
-                chat_id=chat_id,
-                document=file_id,
-                caption=caption,
-                parse_mode="Markdown",
-            )
-            return True
-        except Exception as second_error:
-            print(f"❌ هر دو روش ارسال عکس/فایل برای preuploaded ناموفق بود: {second_error}")
-            raise second_error
-
-
 BTN_ADD_ADMIN = KeyboardButton("➕ افزودن ادمین")
 BTN_REMOVE_ADMIN = KeyboardButton("➖ حذف ادمین")
 BTN_LIST_ADMINS = KeyboardButton("📋 لیست ادمین‌ها")
@@ -1989,12 +1939,22 @@ async def handle_all_messages(update, context):
                 preupload_id, file_id, file_type, message_id, created_at = preuploaded
 
                 try:
-                    await send_preuploaded_file(
-                        context=context,
-                        chat_id=user_id,
-                        file_id=file_id,
-                        file_type=file_type,
-                    )
+                    if str(file_type).lower() == "document":
+                        await context.bot.send_document(
+                            chat_id=user_id,
+                            document=file_id,
+                            caption="📸 عکس یادگاری شما\n\n"
+                            "از اینکه رستوران پسران کریم را انتخاب کردید سپاسگزاریم🌹",
+                            parse_mode="Markdown",
+                        )
+                    else:
+                        await context.bot.send_photo(
+                            chat_id=user_id,
+                            photo=file_id,
+                            caption="📸 عکس یادگاری شما\n\n"
+                            "از اینکه رستوران پسران کریم را انتخاب کردید سپاسگزاریم🌹",
+                            parse_mode="Markdown",
+                        )
 
                     mark_preuploaded_as_used(preupload_id)
 
