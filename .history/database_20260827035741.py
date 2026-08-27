@@ -308,7 +308,6 @@ def save_preuploaded_photo(
     phone, photo_code, branch, file_id, admin_id, message_id=None
 ):
     """ذخیره عکس آپلود شده توسط ادمین در گروه"""
-    init_db()
     conn = get_db_connection()
     c = conn.cursor()
     try:
@@ -330,7 +329,6 @@ def save_preuploaded_photo(
 
 def get_preuploaded_photo(phone, photo_code, branch):
     """دریافت عکس پیش‌آپلود شده با شماره و کد"""
-    init_db()
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
@@ -349,7 +347,6 @@ def get_preuploaded_photo(phone, photo_code, branch):
 
 def mark_preuploaded_as_used(photo_id):
     """علامت‌گذاری عکس پیش‌آپلود به عنوان استفاده شده"""
-    init_db()
     conn = get_db_connection()
     c = conn.cursor()
     try:
@@ -365,7 +362,6 @@ def mark_preuploaded_as_used(photo_id):
 
 def get_all_preuploaded_photos(branch=None):
     """دریافت لیست همه عکس‌های پیش‌آپلود شده"""
-    init_db()
     conn = get_db_connection()
     c = conn.cursor()
     if branch:
