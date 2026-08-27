@@ -1904,18 +1904,9 @@ async def handle_all_messages(update, context):
         return
 
     if context.user_data.get("photo_step") == "phone":
-        if text == BTN_BACK_TEXT:
-            context.user_data["photo_step"] = "code"
-            await update.message.reply_text(
-                "🔙 به بخش وارد کردن کد عکس بازگشتید.\n"
-                "لطفا کد 4 رقمی عکس را وارد کنید:",
-                reply_markup=ReplyKeyboardMarkup([[BTN_BACK]], resize_keyboard=True),
-                parse_mode="Markdown",
-            )
-            return
-
         phone = normalize_phone_number(text)
-        if is_valid_phone_number(phone):
+
+        if phone.isdigit() and len(phone) == 11 and phone.startswith("09"):
             context.user_data["photo_phone"] = phone
             context.user_data["photo_step"] = "complete"
 

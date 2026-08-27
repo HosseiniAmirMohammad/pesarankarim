@@ -53,26 +53,11 @@ def normalize_phone_number(phone):
         return ""
     clean = persian_to_english_numbers(phone)
     clean = re.sub(r"\D", "", clean)
-
     if clean.startswith("98") and len(clean) == 12:
         clean = "0" + clean[2:]
-    elif clean.startswith("9") and len(clean) == 10:
-        clean = "0" + clean
-    elif clean.startswith("0") and len(clean) > 11:
+    if clean.startswith("0") and len(clean) > 11:
         clean = clean[:11]
-
     return clean
-
-
-def is_valid_phone_number(phone):
-    normalized = normalize_phone_number(phone)
-    if not normalized or not normalized.isdigit():
-        return False
-    if len(normalized) == 11 and normalized.startswith("09"):
-        return True
-    if len(normalized) == 10 and normalized.startswith("9"):
-        return True
-    return False
 
 
 def normalize_photo_code(code):
@@ -1324,6 +1309,7 @@ async def handle_all_messages(update, context):
     branch = context.user_data.get("branch", "mashhad")
 
     if context.user_data.get("photo_step") == "phone":
+        phone = normalize_phone_number(text)
         if text == BTN_BACK_TEXT:
             context.user_data["photo_step"] = "code"
             await update.message.reply_text(
@@ -1334,8 +1320,7 @@ async def handle_all_messages(update, context):
             )
             return
 
-        phone = normalize_phone_number(text)
-        if is_valid_phone_number(phone):
+        if phone.isdigit() and len(phone) == 11 and phone.startswith("09"):
             context.user_data["photo_phone"] = phone
             context.user_data["photo_step"] = "complete"
             photo_branch = context.user_data.get("photo_branch", "mashhad")
@@ -1904,18 +1889,9 @@ async def handle_all_messages(update, context):
         return
 
     if context.user_data.get("photo_step") == "phone":
-        if text == BTN_BACK_TEXT:
-            context.user_data["photo_step"] = "code"
-            await update.message.reply_text(
-                "🔙 به بخش وارد کردن کد عکس بازگشتید.\n"
-                "لطفا کد 4 رقمی عکس را وارد کنید:",
-                reply_markup=ReplyKeyboardMarkup([[BTN_BACK]], resize_keyboard=True),
-                parse_mode="Markdown",
-            )
-            return
-
         phone = normalize_phone_number(text)
-        if is_valid_phone_number(phone):
+
+        if phone.isdigit() and len(phone) == 11 and phone.startswith("09"):
             context.user_data["photo_phone"] = phone
             context.user_data["photo_step"] = "complete"
 
