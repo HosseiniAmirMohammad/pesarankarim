@@ -1,8 +1,38 @@
 import sqlite3
 from datetime import datetime, timedelta
 import os
+import re
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "pesarankarim.db")
+
+
+def normalize_phone_for_storage(phone):
+    if phone is None:
+        return ""
+    text = str(phone)
+    persian_numbers = "۰۱۲۳۴۵۶۷۸۹"
+    english_numbers = "0123456789"
+    text = text.translate(str.maketrans(persian_numbers, english_numbers))
+    digits = re.sub(r"\D", "", text)
+
+    if digits.startswith("98") and len(digits) == 12:
+        digits = "0" + digits[2:]
+    elif digits.startswith("9") and len(digits) == 10:
+        digits = "0" + digits
+    elif digits.startswith("0") and len(digits) > 11:
+        digits = digits[:11]
+
+    return digits
+
+
+def normalize_code_for_storage(code):
+    if code is None:
+        return ""
+    text = str(code)
+    persian_numbers = "۰۱۲۳۴۵۶۷۸۹"
+    english_numbers = "0123456789"
+    text = text.translate(str.maketrans(persian_numbers, english_numbers))
+    return re.sub(r"\D", "", text)
 
 
 def init_db():
@@ -309,6 +339,10 @@ def save_preuploaded_photo(
 ):
     """ذخیره عکس آپلود شده توسط ادمین در گروه"""
     init_db()
+    phone = normalize_phone_for_storage(phone)
+    photo_code = normalize_code_for_storage(photo_code)
+    branch = (branch or "mashhad").strip().lower()
+
     conn = get_db_connection()
     c = conn.cursor()
     try:
@@ -331,16 +365,29 @@ def save_preuploaded_photo(
 def get_preuploaded_photo(phone, photo_code, branch):
     """دریافت عکس پیش‌آپلود شده با شماره و کد"""
     init_db()
+    phone = normalize_phone_for_storage(phone)
+    photo_code = normalize_code_for_storage(photo_code)
+    branch = (branch or "mashhad").strip().lower()
+
     conn = get_db_connection()
     c = conn.cursor()
+
+    variants = [phone]
+    if phone.startswith("0"):
+        variants.append("98" + phone[1:])
+    if phone.startswith("98"):
+        variants.append("0" + phone[2:])
+    variants = list(dict.fromkeys(v for v in variants if v))
+
+    placeholders = ", ".join("?" for _ in variants)
     c.execute(
-        """
+        f"""
         SELECT id, file_id, message_id, created_at
         FROM preuploaded_photos 
-        WHERE phone = ? AND photo_code = ? AND branch = ? AND used = 0
+        WHERE phone IN ({placeholders}) AND photo_code = ? AND branch = ? AND used = 0
         ORDER BY created_at DESC LIMIT 1
     """,
-        (phone, photo_code, branch),
+        (*variants, photo_code, branch),
     )
     result = c.fetchone()
     conn.close()
