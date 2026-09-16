@@ -332,6 +332,13 @@ def tehran_menu_kb(user_id=None):
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 
+def branch_menu_kb(branch=None, user_id=None):
+    """منوی مربوط به شعبه؛ اگر کاربر ادمین/سازنده ربات باشد دکمه پنل مدیریت هم اضافه می‌شود"""
+    if branch == "tehran":
+        return tehran_menu_kb(user_id)
+    return mashhad_menu_kb(user_id)
+
+
 def is_leap_year(year):
 
     return jdatetime.date(year, 1, 1).isleap()
@@ -853,7 +860,7 @@ async def back_to_menu_callback(update: Update, context: ContextTypes.DEFAULT_TY
     await context.bot.send_message(
         chat_id=query.from_user.id,
         text="لطفا یکی از گزینه‌های زیر را انتخاب کنید:",
-        reply_markup=mashhad_menu_kb() if branch == "mashhad" else tehran_menu_kb(),
+        reply_markup=branch_menu_kb(branch, query.from_user.id),
     )
 
 
@@ -975,25 +982,21 @@ async def survey_response_handler(update: Update, context: ContextTypes.DEFAULT_
             await update.message.reply_text(
                 "🙏 با تشکر از شما\n\n"
                 "پیام شما ثبت شد و برای بهبود کیفیت خدمات ما بسیار ارزشمند است.",
-                reply_markup=(
-                    mashhad_menu_kb() if branch == "mashhad" else tehran_menu_kb()
-                ),
+                reply_markup=branch_menu_kb(branch, user_id),
                 parse_mode="Markdown",
             )
             context.user_data["survey_step"] = None
         else:
             await update.message.reply_text(
                 "🔙 به منوی اصلی بازگشتید.",
-                reply_markup=(
-                    mashhad_menu_kb() if branch == "mashhad" else tehran_menu_kb()
-                ),
+                reply_markup=branch_menu_kb(branch, user_id),
             )
         return
 
     elif text == "🔙 بازگشت به منو":
         await update.message.reply_text(
             "🔙 به منوی اصلی بازگشتید.",
-            reply_markup=mashhad_menu_kb() if branch == "mashhad" else tehran_menu_kb(),
+            reply_markup=branch_menu_kb(branch, user_id),
         )
         return
 
@@ -1275,9 +1278,7 @@ async def handle_all_messages(update, context):
             branch = context.user_data.get("branch", "mashhad")
             await update.message.reply_text(
                 "🔙 به منوی اصلی بازگشتید.",
-                reply_markup=(
-                    mashhad_menu_kb() if branch == "mashhad" else tehran_menu_kb()
-                ),
+                reply_markup=branch_menu_kb(branch, user_id),
             )
         return
 
@@ -1286,7 +1287,7 @@ async def handle_all_messages(update, context):
         await update.message.reply_text(
             "شعبه مشهد (خیام) انتخاب شد✅\n\n"
             "برای استفاده یکی از گزینه های زیر را انتخاب کنید👇:",
-            reply_markup=mashhad_menu_kb(),
+            reply_markup=branch_menu_kb("mashhad", user_id),
             parse_mode="Markdown",
         )
         return
@@ -1296,7 +1297,7 @@ async def handle_all_messages(update, context):
         await update.message.reply_text(
             "شعبه تهران (هتل پارسیان آزادی) انتخاب شد✅\n\n"
             "برای استفاده یکی از گزینه های زیر را انتخاب کنید👇",
-            reply_markup=tehran_menu_kb(),
+            reply_markup=branch_menu_kb("tehran", user_id),
             parse_mode="Markdown",
         )
         return
@@ -1384,7 +1385,7 @@ async def handle_all_messages(update, context):
         branch = context.user_data.get("branch", "mashhad")
         await update.message.reply_text(
             "🔙 به منوی اصلی بازگشتید.",
-            reply_markup=mashhad_menu_kb() if branch == "mashhad" else tehran_menu_kb(),
+            reply_markup=branch_menu_kb(branch, user_id),
             parse_mode="Markdown",
         )
         return
@@ -1431,11 +1432,7 @@ async def handle_all_messages(update, context):
                     await update.message.reply_text(
                         "✅ عکس شما ارسال شد!\n\n"
                         "از اینکه رستوران پسران کریم را انتخاب کردید سپاسگزاریم🌹",
-                        reply_markup=(
-                            mashhad_menu_kb()
-                            if photo_branch == "mashhad"
-                            else tehran_menu_kb()
-                        ),
+                        reply_markup=branch_menu_kb(photo_branch, user_id),
                         parse_mode="Markdown",
                     )
                     await start_survey(context, user_id, photo_branch)
@@ -1454,9 +1451,7 @@ async def handle_all_messages(update, context):
             await update.message.reply_text(
                 "درخواست شما ثبت شد✅\n\n"
                 "شما در صف انتظار هستید و به محض آماده شدن عکس، فایل آن برای شما ارسال میشود.",
-                reply_markup=(
-                    mashhad_menu_kb() if photo_branch == "mashhad" else tehran_menu_kb()
-                ),
+                reply_markup=branch_menu_kb(photo_branch, user_id),
                 parse_mode="Markdown",
             )
             context.user_data["photo_step"] = None
@@ -2010,11 +2005,7 @@ async def handle_all_messages(update, context):
                         "فایل اصلی عکستون با کیفیت بالا تقدیم محضر باسعادتتون🙏😇🌹\n\n"
                         "چنانچه تمایل دارید عکسهای زیبایتان در صفحه ما استوری شود قبول زحمت بفرمایید با یک پیج غیر پرایوت، آن را استوری کرده و مارا تگ نمایید تا بتوانیم اد استوری کرده و انجام وظیفه کنیم😍🙏🌹\n\n"
                         "از عکس و کیفیت غذا و برخورد پرسنل و... رضایت کامل داشتید انشاالله؟😇",
-                        reply_markup=(
-                            mashhad_menu_kb()
-                            if photo_branch == "mashhad"
-                            else tehran_menu_kb()
-                        ),
+                        reply_markup=branch_menu_kb(photo_branch, user_id),
                         parse_mode="Markdown",
                     )
 
@@ -2036,9 +2027,7 @@ async def handle_all_messages(update, context):
             await update.message.reply_text(
                 "درخواست شما ثبت شد✅\n\n"
                 "شما در صف انتظار هستید و به محض آماده شدن عکس، فایل آن برای شما ارسال میشود.",
-                reply_markup=(
-                    mashhad_menu_kb() if photo_branch == "mashhad" else tehran_menu_kb()
-                ),
+                reply_markup=branch_menu_kb(photo_branch, user_id),
                 parse_mode="Markdown",
             )
 
@@ -2055,9 +2044,7 @@ async def handle_all_messages(update, context):
     if text == BTN_BACK_TEXT:
         await update.message.reply_text(
             "🔙 به منوی اصلی بازگشتید.",
-            reply_markup=(
-                mashhad_menu_kb() if branch == "mashhad" else tehran_menu_kb()
-            ),
+            reply_markup=branch_menu_kb(branch, user_id),
         )
         return
 

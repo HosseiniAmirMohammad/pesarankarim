@@ -390,6 +390,103 @@ check(
 )
 
 # ---------------------------------------------------------------------------
+# ۶) نمایش دکمه «پنل مدیریت» در همه منوها برای ادمین‌ها (آیدی 383415679 و کارفرما)
+# ---------------------------------------------------------------------------
+print("\n=== ۶) دکمه پنل مدیریت در منوها ===")
+
+bot.real_member = AsyncMock(return_value=True)
+PANEL = bot.BTN_ADMIN_PANEL.text
+MY_ID = bot.MAIN_ADMIN_ID
+
+
+def buttons_of(markup):
+    return [b.text for row in markup.keyboard for b in row]
+
+
+def has_panel(markup):
+    return markup is not None and PANEL in buttons_of(markup)
+
+
+def last_markup(message):
+    return message.reply_text.await_args_list[-1].kwargs.get("reply_markup")
+
+
+async def send_text(sender_id, text, user_data=None):
+    """شبیه‌سازی ارسال یک پیام متنی توسط کاربر در چت خصوصی"""
+    message = types.SimpleNamespace(
+        chat_id=sender_id,
+        text=text,
+        message_id=7,
+        photo=None,
+        document=None,
+        caption=None,
+        reply_text=AsyncMock(),
+    )
+    update = types.SimpleNamespace(
+        effective_user=types.SimpleNamespace(id=sender_id, first_name="U"),
+        message=message,
+        effective_chat=types.SimpleNamespace(type="private"),
+    )
+    context = types.SimpleNamespace(
+        user_data={} if user_data is None else user_data,
+        bot=types.SimpleNamespace(
+            send_message=AsyncMock(),
+            send_photo=AsyncMock(),
+            send_document=AsyncMock(),
+            delete_message=AsyncMock(),
+        ),
+    )
+    await bot.handle_all_messages(update, context)
+    return message
+
+
+check(
+    "branch_menu_kb(مشهد) برای آیدی من دکمه پنل را دارد",
+    has_panel(bot.branch_menu_kb("mashhad", MY_ID)),
+)
+check(
+    "branch_menu_kb(تهران) برای آیدی من دکمه پنل را دارد",
+    has_panel(bot.branch_menu_kb("tehran", MY_ID)),
+)
+check(
+    "branch_menu_kb(مشهد) برای کارفرما دکمه پنل را دارد",
+    has_panel(bot.branch_menu_kb("mashhad", OWNER)),
+)
+check(
+    "branch_menu_kb(مشهد) برای کاربر عادی دکمه پنل را ندارد",
+    not has_panel(bot.branch_menu_kb("mashhad", STAFF)),
+)
+
+msg = asyncio.run(send_text(MY_ID, "شعبه مشهد(خیام)"))
+check("انتخاب شعبه مشهد توسط آیدی من: دکمه پنل نمایش داده می‌شود", has_panel(last_markup(msg)))
+
+msg = asyncio.run(send_text(OWNER, "شعبه تهران(هتل پارسیان آزادی)"))
+check("انتخاب شعبه تهران توسط کارفرما: دکمه پنل نمایش داده می‌شود", has_panel(last_markup(msg)))
+
+msg = asyncio.run(send_text(STAFF, "شعبه مشهد(خیام)"))
+check("انتخاب شعبه توسط کاربر عادی: دکمه پنل نمایش داده نمی‌شود", not has_panel(last_markup(msg)))
+
+msg = asyncio.run(send_text(MY_ID, "🔙 بازگشت به منو", user_data={"branch": "tehran"}))
+check(
+    "بازگشت از پنل مدیریت به منو (آیدی من): دکمه پنل باقی می‌ماند",
+    has_panel(last_markup(msg)),
+    str(buttons_of(last_markup(msg))),
+)
+
+msg = asyncio.run(send_text(OWNER, bot.BTN_BACK_TEXT, user_data={"branch": "mashhad"}))
+check(
+    "دکمه «بازگشت» (کارفرما): دکمه پنل نمایش داده می‌شود",
+    has_panel(last_markup(msg)),
+    str(buttons_of(last_markup(msg))),
+)
+
+msg = asyncio.run(send_text(STAFF, bot.BTN_BACK_TEXT, user_data={"branch": "mashhad"}))
+check(
+    "دکمه «بازگشت» (کاربر عادی): دکمه پنل نمایش داده نمی‌شود",
+    not has_panel(last_markup(msg)),
+)
+
+# ---------------------------------------------------------------------------
 # خلاصه
 # ---------------------------------------------------------------------------
 print("\n=== خلاصه نتایج ===")
