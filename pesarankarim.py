@@ -16,6 +16,7 @@ from telegram.ext import (
 from database import (
     save_photo_request,
     is_admin,
+    is_super_admin,
     get_pending_requests,
     get_failed_requests,
     get_daily_stats,
@@ -28,6 +29,7 @@ from database import (
     mark_preuploaded_as_used,
     get_all_preuploaded_photos,
     init_db,
+    init_admin_user,
 )
 import jdatetime
 import re
@@ -464,7 +466,8 @@ async def admin_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = []
     for admin in admins:
         admin_id = admin["user_id"]
-        if admin_id != update.effective_user.id:
+        # ادمین اصلی و سازنده/مالک ربات قابل حذف نیستند
+        if admin_id != update.effective_user.id and not is_super_admin(admin_id):
             username = admin.get("username")
             first_name = admin.get("first_name") or ""
             display_text = f"@{username}" if username else f"{first_name} ({admin_id})"
@@ -506,7 +509,8 @@ async def admin_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
             name_display = str(admin_id)
 
         added_at = admin.get("added_at", "نامشخص")
-        text += f"{i}. {name_display}\n   🆔 آیدی: `{admin_id}`\n   🕐 افزوده شده: {added_at}\n\n"
+        badge = " 👑 سازنده ربات" if is_super_admin(admin_id) else ""
+        text += f"{i}. {name_display}{badge}\n   🆔 آیدی: `{admin_id}`\n   🕐 افزوده شده: {added_at}\n\n"
 
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -705,6 +709,14 @@ async def handle_admin_management(update: Update, context: ContextTypes.DEFAULT_
                         parse_mode="Markdown",
                     )
                     return
+
+            if is_super_admin(admin_id_to_remove):
+                await update.message.reply_text(
+                    "❌ این کاربر سازنده/مالک ربات است و قابل حذف نیست."
+                )
+                context.user_data.pop("admin_action", None)
+                await admin_manage(update, context)
+                return
 
             if admin_id_to_remove == user_id:
                 await update.message.reply_text("❌ نمی‌توانید خودتان را حذف کنید!")
@@ -1475,7 +1487,7 @@ async def handle_all_messages(update, context):
                     [
                         [
                             InlineKeyboardButton(
-                                "🟡 دانلود اپلیکیشن پسران کریم",
+                                "🟡 دانلود اپلیکیشن پسران کریم 🟡",
                                 url="www.pesaranekarim.rest/app",
                             )
                         ]
@@ -1493,7 +1505,7 @@ async def handle_all_messages(update, context):
                     [
                         [
                             InlineKeyboardButton(
-                                "🟡 مشاهده منو به همراه قیمت",
+                                "🟡 مشاهده منو به همراه قیمت 🟡",
                                 url="https://www.pesaranekarim.rest/menu-mashhad",
                             )
                         ]
@@ -1510,7 +1522,7 @@ async def handle_all_messages(update, context):
                 [
                     [
                         InlineKeyboardButton(
-                            "🟡 مشاهده منو به همراه تصاویر",
+                            "🟡 مشاهده منو به همراه تصاویر 🟡",
                             url="https://www.pesaranekarim.rest/menu",
                         )
                     ]
@@ -1527,7 +1539,7 @@ async def handle_all_messages(update, context):
                 [
                     [
                         InlineKeyboardButton(
-                            "🟡 سفارش آنلاین", url="www.pesaranekarim.rest"
+                            "🟡 سفارش آنلاین 🟡", url="www.pesaranekarim.rest"
                         )
                     ]
                 ]
@@ -1569,7 +1581,7 @@ async def handle_all_messages(update, context):
         elif text == "آدرس ما":
             if branch == "mashhad":
                 await update.message.reply_text(
-                    "🟡 آدرس ما:\n\n"
+                    "🟡 آدرس ما:\n\n 🟡"
                     "مشهد: بلوار خیام به سمت الماس شرق، بین خیام 61و63، ساختمان مروارید، طبقه منفی ۲، رستوران پسران کریم",
                     parse_mode="Markdown",
                 )
@@ -1648,7 +1660,7 @@ async def handle_all_messages(update, context):
                 [
                     [
                         InlineKeyboardButton(
-                            "🟡 تاریخچه پسران کریم",
+                            "🟡 تاریخچه پسران کریم 🟡",
                             url="https://www.pesaranekarim.rest/history",
                         )
                     ]
@@ -1665,7 +1677,10 @@ async def handle_all_messages(update, context):
             context.user_data["photo_branch"] = branch
             context.user_data["photo_step"] = "year"
             await update.message.reply_text(
-                f"📍 شما در شعبه تهران (هتل پارسیان آزادی) هستید.\n\n"
+                "📍 شما در شعبه تهران (هتل پارسیان آزادی) هستید.\n\n"
+                "با سلام و احترام\n"
+                "وقتتون بخیر\n\n"
+                "لطفا مرحمت فرمایید کد عکس، تاریخ و شماره تماسی که در پشت برگه یادداشت شده را ارسال فرمایید:\n\n"
                 "🔹 لطفا سالی که عکس را گرفته‌اید انتخاب کنید:",
                 reply_markup=year_kb(),
                 parse_mode="Markdown",
@@ -1678,7 +1693,7 @@ async def handle_all_messages(update, context):
                     [
                         [
                             InlineKeyboardButton(
-                                "🟡 دانلود اپلیکیشن پسران کریم",
+                                "🟡 دانلود اپلیکیشن پسران کریم 🟡",
                                 url="www.pesaranekarim.rest/app",
                             )
                         ]
@@ -1696,7 +1711,7 @@ async def handle_all_messages(update, context):
                     [
                         [
                             InlineKeyboardButton(
-                                "🟡 مشاهده منو به همراه قیمت",
+                                "🟡 مشاهده منو به همراه قیمت 🟡",
                                 url="https://www.pesaranekarim.rest/menu-tehran",
                             )
                         ]
@@ -1713,7 +1728,7 @@ async def handle_all_messages(update, context):
                 [
                     [
                         InlineKeyboardButton(
-                            "🟡 مشاهده منو به همراه تصویر",
+                            "🟡 مشاهده منو به همراه تصویر 🟡",
                             url="https://www.pesaranekarim.rest/menu",
                         )
                     ]
@@ -1730,7 +1745,7 @@ async def handle_all_messages(update, context):
                 [
                     [
                         InlineKeyboardButton(
-                            "🟡 سفارش آنلاین", url="www.pesaranekarim.rest"
+                            "🟡 سفارش آنلاین 🟡", url="www.pesaranekarim.rest"
                         )
                     ]
                 ]
@@ -1758,7 +1773,7 @@ async def handle_all_messages(update, context):
                     [
                         [
                             InlineKeyboardButton(
-                                "🟡 مسیریابی به رستوران پسران کریم تهران",
+                                "🟡 مسیریابی به رستوران پسران کریم تهران 🟡",
                                 url="https://www.pesaranekarim.rest/direction/tehran",
                             )
                         ]
@@ -1853,7 +1868,7 @@ async def handle_all_messages(update, context):
                 [
                     [
                         InlineKeyboardButton(
-                            "🟡 تاریخچه پسران کریم",
+                            "🟡 تاریخچه پسران کریم 🟡",
                             url="https://www.pesaranekarim.rest/history",
                         )
                     ]
@@ -1992,8 +2007,9 @@ async def handle_all_messages(update, context):
                     )
 
                     await update.message.reply_text(
-                        "✅ عکس شما ارسال شد!\n\n"
-                        "از اینکه رستوران پسران کریم را انتخاب کردید سپاسگزاریم🌹",
+                        "فایل اصلی عکستون با کیفیت بالا تقدیم محضر باسعادتتون🙏😇🌹\n\n"
+                        "چنانچه تمایل دارید عکسهای زیبایتان در صفحه ما استوری شود قبول زحمت بفرمایید با یک پیج غیر پرایوت، آن را استوری کرده و مارا تگ نمایید تا بتوانیم اد استوری کرده و انجام وظیفه کنیم😍🙏🌹\n\n"
+                        "از عکس و کیفیت غذا و برخورد پرسنل و... رضایت کامل داشتید انشاالله؟😇",
                         reply_markup=(
                             mashhad_menu_kb()
                             if photo_branch == "mashhad"
@@ -2052,7 +2068,11 @@ async def handle_group_photo(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if chat_id not in [GROUP_MASHHAD_PHOTO, GROUP_TEHRAN_PHOTO]:
         return
 
-    if not is_admin(update.effective_user.id):
+    # ✅ در گروه‌های عکس، همه اعضا می‌توانند عکس بفرستند و پیام «دسترسی ندارید» داده نمی‌شود.
+    # برای محدود کردن دوباره به ادمین‌ها، مقدار ALLOW_GROUP_PHOTOS_FOR_ALL را
+    # در فایل config.py روی False بگذارید.
+    sender_is_admin = is_admin(update.effective_user.id)
+    if not sender_is_admin and not ALLOW_GROUP_PHOTOS_FOR_ALL:
         await update.message.reply_text("شما دسترسی به این بخش ندارید❌")
         return
 
@@ -2169,7 +2189,12 @@ async def handle_group_photo(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text(f"❌ ارسال ناموفق! خطا: {e}")
         return
 
-    caption = update.message.caption or ""
+    caption = (update.message.caption or "").strip()
+
+    # عکس بدون کپشن در گروه کاری: پاسخی داده نمی‌شود تا مزاحم اعضای گروه نشویم
+    if not caption:
+        return
+
     phone, photo_code = extract_phone_and_code(caption)
 
     if not (phone.isdigit() and len(phone) == 11 and phone.startswith("09")):
@@ -2304,6 +2329,7 @@ async def handle_group_photo(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 def main():
     init_db()
+    init_admin_user()
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
@@ -2327,8 +2353,13 @@ def main():
         )
     )
 
+    # پیام‌های متنی فقط در چت خصوصی پردازش می‌شوند تا گروه‌ها پیام اضافه (مثل
+    # «شما از کانال خارج شدید») دریافت نکنند
     app.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_all_messages)
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
+            handle_all_messages,
+        )
     )
 
     print("BOT IS UP...")

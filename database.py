@@ -3,6 +3,11 @@ from datetime import datetime, timedelta
 import os
 import re
 
+try:
+    from config import SUPER_ADMIN_IDS
+except Exception:  # اگر config در دسترس نبود، حداقل‌های امن استفاده می‌شود
+    SUPER_ADMIN_IDS = ()
+
 DB_PATH = os.path.join(os.path.dirname(__file__), "pesarankarim.db")
 
 
@@ -215,6 +220,21 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_preuploaded_photos_used ON preuploaded_photos(used)"
     )
 
+    # ===== اطمینان از دسترسی کامل سازنده/مالک ربات =====
+    # این آیدی‌ها همیشه در لیست ادمین‌ها فعال نگه داشته می‌شوند
+    for super_admin_id in SUPER_ADMIN_IDS:
+        c.execute(
+            """
+            INSERT OR IGNORE INTO admins (user_id, added_by, is_active)
+            VALUES (?, ?, 1)
+        """,
+            (super_admin_id, super_admin_id),
+        )
+        c.execute(
+            "UPDATE admins SET is_active = 1 WHERE user_id = ?",
+            (super_admin_id,),
+        )
+
     conn.commit()
     conn.close()
 
@@ -250,6 +270,10 @@ def add_admin(user_id, username=None, first_name=None, last_name=None, added_by=
 
 
 def remove_admin(user_id):
+    # سازنده/مالک ربات قابل حذف شدن نیست
+    if is_super_admin(user_id):
+        return False
+
     conn = get_db_connection()
     c = conn.cursor()
     try:
@@ -265,6 +289,10 @@ def remove_admin(user_id):
 
 def delete_admin_permanently(user_id):
     """حذف کامل ادمین از دیتابیس"""
+    # سازنده/مالک ربات قابل حذف شدن نیست
+    if is_super_admin(user_id):
+        return False
+
     conn = get_db_connection()
     c = conn.cursor()
     try:
@@ -278,7 +306,19 @@ def delete_admin_permanently(user_id):
         conn.close()
 
 
+def is_super_admin(user_id):
+    """بررسی اینکه کاربر سازنده/مالک ربات است یا نه (دسترسی کامل و همیشگی)"""
+    try:
+        return int(user_id) in SUPER_ADMIN_IDS
+    except (TypeError, ValueError):
+        return False
+
+
 def is_admin(user_id):
+    # سازنده/مالک ربات همیشه دسترسی کامل دارد، حتی اگر از دیتابیس حذف شود
+    if is_super_admin(user_id):
+        return True
+
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
@@ -361,23 +401,6 @@ def update_admin_login(user_id):
         return False
     finally:
         conn.close()
-
-
-def is_super_admin(user_id):
-    """بررسی سوپر ادمین بودن (اولین ادمین)"""
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute(
-        """
-        SELECT user_id FROM admins 
-        WHERE user_id = ? AND is_active = 1 
-        ORDER BY added_at ASC LIMIT 1
-    """,
-        (user_id,),
-    )
-    result = c.fetchone()
-    conn.close()
-    return result is not None
 
 
 # ===== توابع عکس‌های پیش‌آپلود شده =====
@@ -1027,26 +1050,25 @@ def get_db_stats():
 
 
 def init_admin_user():
-    YOUR_USER_ID = 383415679
+    """اطمینان از ثبت سازنده/مالک ربات در لیست ادمین‌ها"""
 
     conn = get_db_connection()
     c = conn.cursor()
 
-    c.execute("SELECT COUNT(*) FROM admins")
-    count = c.fetchone()[0]
-
-    if count == 0:
+    for super_admin_id in SUPER_ADMIN_IDS:
         c.execute(
             """
             INSERT OR IGNORE INTO admins (user_id, added_by, is_active)
             VALUES (?, ?, 1)
         """,
-            (YOUR_USER_ID, YOUR_USER_ID),
+            (super_admin_id, super_admin_id),
         )
-        conn.commit()
-        print(f"✅ ادمین اولیه با آیدی {YOUR_USER_ID} اضافه شد.")
-    else:
-        print("ℹ️ ادمین اولیه قبلاً اضافه شده است.")
+        c.execute(
+            "UPDATE admins SET is_active = 1 WHERE user_id = ?", (super_admin_id,)
+        )
+        print(f"✅ دسترسی کامل برای آیدی {super_admin_id} فعال است.")
+
+    conn.commit()
 
     conn.close()
 
