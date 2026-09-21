@@ -3,6 +3,7 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
     KeyboardButton,
 )
 from telegram.ext import (
@@ -701,14 +702,14 @@ def google_review_kb(branch):
     )
 
 
-def reward_kb(branch="mashhad"):
-    """دکمه دریافت امتیاز هدیه (شعبه در callback_data نگه داشته می‌شود)"""
+def review_done_kb(branch="mashhad"):
+    """دکمه «نظر دادم» زیر گیف نظرسنجی (با زدنش تبریک و امتیاز هدیه ثبت می‌شود)"""
     branch = "tehran" if str(branch).lower() == "tehran" else "mashhad"
     return InlineKeyboardMarkup(
         [
             [
                 InlineKeyboardButton(
-                    f"🎁 دریافت {REWARD_POINTS} امتیاز",
+                    "✅ نظر دادم",
                     callback_data=f"claim_reward|{branch}",
                 )
             ]
@@ -747,11 +748,11 @@ def low_rating_kb():
 
 
 def reward_received_text(branch, claims_count=None):
-    """متن پیام «دریافت امتیاز» برای مشتری"""
+    """متن پیام تبریک و دریافت امتیاز برای مشتری"""
     now = jdatetime.datetime.now().strftime("%Y/%m/%d - %H:%M")
     text = (
-        f"🎁 {REWARD_POINTS} امتیاز شما دریافت شد\n\n"
-        f"از اینکه با ثبت نظر ۵ ستاره در گوگل مپ به رشد ما کمک کردید سپاسگزاریم✅\n"
+        f"🎉 تبریک! نظر ۵ ستاره شما ثبت شد\n\n"
+        f"🎁 {REWARD_POINTS} امتیاز هدیه به شما اهدا شد✅\n"
         f"📍 شعبه: {branch_display_name(branch)}\n"
         f" زمان ثبت: {now}"
     )
@@ -818,13 +819,13 @@ async def send_review_gif_file(context, chat_id, gif, reply_markup=None):
 
 
 async def send_review_gif(context, chat_id, branch):
-    """ارسال پیام گیف نظرسنجی همراه دکمه لینک گوگل مپ
+    """ارسال پیام گیف نظرسنجی همراه دکمه «✅ نظر دادم»
 
     ۱) گیفی که مدیر در پنل مدیریت ثبت کرده باشد
     ۲) کپی پیام گیف موجود در گروه لیست انتظار همان شعبه
     ۳) پیام متنی جایگزین (اگر هیچ‌کدام ممکن نبود)
     """
-    reply_markup = google_review_kb(branch)
+    reply_markup = review_done_kb(branch)
 
     registered_gif = get_review_gif(branch)
     if registered_gif:
@@ -857,18 +858,13 @@ async def send_review_gif(context, chat_id, branch):
 
 
 async def send_review_request_messages(context, chat_id, branch):
-    """پیام‌های بعد از اعلام رضایت ۵ ستاره: لینک گوگل مپ ← گیف ← هدیه ۱۰ امتیاز"""
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=GOOGLE_REVIEW_MESSAGE,
-        reply_markup=google_review_kb(branch),
-    )
+    """بعد از اعلام رضایت ۵ ستاره: فقط پیام گیف با دکمه «✅ نظر دادم» ارسال می‌شود
+
+    (پیام جداگانه لینک گوگل مپ و دکمه دریافت امتیاز حذف شد؛ کاربر بعد از ثبت
+    نظر، با زدن دکمه «نظر دادم» تبریک و ۱۰ امتیاز هدیه می‌گیرد و به منوی اصلی
+    برمی‌گردد.)
+    """
     await send_review_gif(context, chat_id, branch)
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=REWARD_INVITE_MESSAGE,
-        reply_markup=reward_kb(branch),
-    )
 
 
 def admin_panel_kb():
@@ -1842,11 +1838,16 @@ async def claim_reward_callback(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e:
         print(f"ℹ️ حذف دکمه دریافت امتیاز ممکن نشد: {e}")
 
-    # ۱) پیام دریافت امتیاز ۲) پیام سپاسگزاری
+    # ۱) پیام تبریک و دریافت امتیاز ۲) پیام سپاسگزاری ۳) بازگشت به منوی اصلی
     await context.bot.send_message(
         chat_id=user_id, text=reward_received_text(branch, claims_count)
     )
     await context.bot.send_message(chat_id=user_id, text=REWARD_THANKS_MESSAGE)
+    await context.bot.send_message(
+        chat_id=user_id,
+        text="لطفا یکی از گزینه‌های زیر را انتخاب کنید:",
+        reply_markup=branch_menu_kb(branch, user_id),
+    )
 
 
 def user_state(context, user_id):
@@ -1991,8 +1992,15 @@ async def survey_response_handler(update: Update, context: ContextTypes.DEFAULT_
 
         set_survey_step(context, user_id, None, survey_branch=branch)
 
-        # لینک گوگل مپ ← پیام گیف گروه شعبه ← دعوت به دریافت ۱۰ امتیاز
+        # گیف نظرسنجی با دکمه «✅ نظر دادم» ارسال می‌شود
         await send_review_request_messages(context, user_id, branch)
+
+        # بازگشت به منوی اصلی (کیبورد بله/خیر نظرسنجی از صفحه کاربر پاک می‌شود)
+        await context.bot.send_message(
+            chat_id=user_id,
+            text="لطفا یکی از گزینه‌های زیر را انتخاب کنید:",
+            reply_markup=branch_menu_kb(branch, user_id),
+        )
         return
 
     # ===== پاسخ «خیر»: دریافت امتیاز ۱ تا ۴ ستاره =====
@@ -2209,12 +2217,17 @@ async def handle_admin_response(update: Update, context: ContextTypes.DEFAULT_TY
             f"📸 تعداد عکس‌های ارسال‌شده: {count}"
         )
 
-        # در گروه‌های کاری، پنل مدیریت فرستاده نمی‌شود تا مزاحم اعضا نشویم
+        # در گروه‌های کاری، پنل مدیریت فرستاده نمی‌شود و کیبورد گیرکرده
+        # بله/خیر از صفحه ادمین پاک می‌شود تا دکمه‌ها بی‌اثر نمانند
         chat_type = getattr(
             getattr(update, "effective_chat", None), "type", "private"
         )
         if chat_type and chat_type != "private":
-            await update.message.reply_text(finished_text, parse_mode="Markdown")
+            await update.message.reply_text(
+                finished_text + "\n\n🔙 برای ادامه در ربات خصوصی پیام بدهید.",
+                reply_markup=ReplyKeyboardRemove(),
+                parse_mode="Markdown",
+            )
         else:
             await update.message.reply_text(
                 finished_text,
