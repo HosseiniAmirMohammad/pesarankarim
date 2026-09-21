@@ -30,9 +30,16 @@ from database import (
     get_all_preuploaded_photos,
     init_db,
     init_admin_user,
+    log_bot_usage,
+    get_users_log,
+    get_users_count,
+    get_users_stats,
+    get_usage_logs,
+    get_usage_logs_count,
 )
 import jdatetime
 import re
+from datetime import datetime, timedelta, timezone
 from config import *
 
 
@@ -134,6 +141,112 @@ def extract_phone_and_code(raw_text):
             code = normalize_photo_code(code_match.group(0))
 
     return phone, code
+
+
+# ===== ابزارهای لاگ کاربران ربات =====
+IRAN_TIMEZONE = timezone(timedelta(hours=3, minutes=30))
+USERS_LOG_PAGE_SIZE = 10
+USAGE_LOG_PAGE_SIZE = 10
+
+# برچسب خوانا برای ورودی‌های وسط فرایند ثبت عکس
+STEP_USAGE_LABELS = {
+    "year": "انتخاب سال عکس",
+    "month": "انتخاب ماه عکس",
+    "day": "انتخاب روز عکس",
+    "code": "ورود کد عکس",
+    "phone": "ورود شماره تلفن",
+}
+
+
+def to_iran_datetime(sqlite_timestamp):
+    """تبدیل زمان UTC ذخیره‌شده در دیتابیس به وقت ایران (UTC+3:30)"""
+    if not sqlite_timestamp:
+        return None
+
+    text = str(sqlite_timestamp).strip()
+    parsed = None
+    for date_format in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M:%S.%f",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%dT%H:%M:%S",
+    ):
+        try:
+            parsed = datetime.strptime(text, date_format)
+            break
+        except ValueError:
+            continue
+
+    if parsed is None:
+        return None
+
+    return parsed.replace(tzinfo=timezone.utc).astimezone(IRAN_TIMEZONE)
+
+
+def format_persian_datetime(sqlite_timestamp, with_time=True):
+    """نمایش زمان دیتابیس به صورت تاریخ شمسی و ساعت به وقت ایران"""
+    dt = to_iran_datetime(sqlite_timestamp)
+    if dt is None:
+        return "نامشخص"
+
+    try:
+        jalali_date = jdatetime.date.fromgregorian(date=dt.date()).strftime("%Y/%m/%d")
+    except Exception:
+        return "نامشخص"
+
+    if not with_time:
+        return jalali_date
+    return f"{jalali_date} - {dt.strftime('%H:%M')}"
+
+
+def format_user_display(user_id, first_name=None, username=None):
+    """نمایش خوانا از کاربر برای لاگ‌ها"""
+    name = (first_name or "").strip() or "کاربر بدون نام"
+    if len(name) > 30:
+        name = name[:30] + "…"
+
+    parts = [name]
+    if username:
+        parts.append(f"@{username}")
+    parts.append(f"آیدی: {user_id}")
+    return " | ".join(parts)
+
+
+def build_usage_action(text, step=None):
+    """ساخت برچسب خوانا برای هر استفاده از ربات"""
+    clean = re.sub(r"\s+", " ", text or "").strip()
+
+    if step in STEP_USAGE_LABELS:
+        return f"{STEP_USAGE_LABELS[step]}: {clean[:30]}"
+
+    if len(clean) > 60:
+        clean = clean[:60] + "…"
+    return clean or "پیام بدون متن"
+
+
+def log_user_activity(user, action, detail=None):
+    """ثبت استفاده کاربر از ربات (کاربر در اولین استفاده به عنوان عضو ربات ثبت می‌شود)"""
+    try:
+        log_bot_usage(
+            user_id=user.id,
+            action=action,
+            detail=detail,
+            username=getattr(user, "username", None),
+            first_name=getattr(user, "first_name", None),
+            last_name=getattr(user, "last_name", None),
+        )
+    except Exception as e:
+        print(f"❌ خطا در ثبت فعالیت کاربر: {e}")
+
+
+def log_photo_request_activity(user, phone, photo_code, branch):
+    """ثبت لاگ ثبت درخواست عکس یادگاری توسط کاربر"""
+    branch_name = "مشهد" if branch == "mashhad" else "تهران"
+    log_user_activity(
+        user,
+        "ثبت درخواست عکس یادگاری",
+        detail=f"تلفن: {phone} | کد: {photo_code} | شعبه: {branch_name}",
+    )
 
 
 async def real_member(context, user_id):
@@ -250,6 +363,8 @@ BTN_ADMIN_MASHHAD_FAILED = KeyboardButton("❌ ارسال ناموفق - مشه�
 BTN_ADMIN_TEHRAN_FAILED = KeyboardButton("❌ ارسال ناموفق - تهران")
 BTN_ADMIN_RESEND = KeyboardButton("ارسال مجدد")
 BTN_ADMIN_MANAGE = KeyboardButton("👥 مدیریت ادمین‌ها")
+BTN_ADMIN_USERS_LOG = KeyboardButton("📋 کاربران ربات")
+BTN_ADMIN_USAGE_LOG = KeyboardButton("🧾 لاگ استفاده از ربات")
 BTN_ADMIN_BACK = KeyboardButton("🔙 بازگشت به منو")
 
 BTN_YES = KeyboardButton("بله، عکس دیگری دارم")
@@ -282,6 +397,7 @@ SUPPORT_USERNAME = "pesaranekarimphotos"
 def admin_panel_kb():
     keyboard = [
         [BTN_ADMIN_STATS],
+        [BTN_ADMIN_USERS_LOG, BTN_ADMIN_USAGE_LOG],
         [BTN_ADMIN_MASHHAD_PENDING, BTN_ADMIN_TEHRAN_PENDING],
         [BTN_ADMIN_MASHHAD_FAILED, BTN_ADMIN_TEHRAN_FAILED],
         [BTN_ADMIN_RESEND],
@@ -768,6 +884,174 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def admin_users_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """نمایش کاربران ربات همراه با تاریخ عضویت‌شان در ربات"""
+    if not is_admin(update.effective_user.id):
+        return
+
+    text, keyboard = build_users_log_page(0)
+    await update.message.reply_text(text, reply_markup=keyboard)
+
+
+async def admin_usage_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """نمایش لاگ استفاده از ربات: چه کسی، چه زمانی و با چه تاریخ عضویتی"""
+    if not is_admin(update.effective_user.id):
+        return
+
+    text, keyboard = build_usage_log_page(0)
+    await update.message.reply_text(text, reply_markup=keyboard)
+
+
+def _parse_log_callback_offset(callback_data):
+    """استخراج شماره صفحه از داده دکمه‌های صفحه‌بندی لاگ"""
+    try:
+        return int(str(callback_data).split(":")[1])
+    except (IndexError, ValueError):
+        return 0
+
+
+async def users_log_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """صفحه‌بندی لیست کاربران ربات"""
+    query = update.callback_query
+    await query.answer()
+
+    if not is_admin(query.from_user.id):
+        return
+
+    offset = _parse_log_callback_offset(query.data)
+    text, keyboard = build_users_log_page(offset)
+    await query.edit_message_text(text, reply_markup=keyboard)
+
+
+async def usage_log_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """صفحه‌بندی لاگ استفاده از ربات"""
+    query = update.callback_query
+    await query.answer()
+
+    if not is_admin(query.from_user.id):
+        return
+
+    offset = _parse_log_callback_offset(query.data)
+    text, keyboard = build_usage_log_page(offset)
+    await query.edit_message_text(text, reply_markup=keyboard)
+
+
+def _clamp_log_offset(offset, total, page_size):
+    """محدود کردن شماره صفحه در بازه مجاز"""
+    max_offset = ((max(total, 1) - 1) // page_size) * page_size
+    return max(0, min(offset, max_offset))
+
+
+def _log_page_keyboard(callback_prefix, offset, page_size, total):
+    """دکمه‌های صفحه‌بندی لاگ‌ها"""
+    buttons = []
+    if offset > 0:
+        buttons.append(
+            InlineKeyboardButton(
+                "⬅️ صفحه قبل",
+                callback_data=f"{callback_prefix}:{max(0, offset - page_size)}",
+            )
+        )
+    if offset + page_size < total:
+        buttons.append(
+            InlineKeyboardButton(
+                "صفحه بعد ➡️",
+                callback_data=f"{callback_prefix}:{offset + page_size}",
+            )
+        )
+    return InlineKeyboardMarkup([buttons]) if buttons else None
+
+
+def build_users_log_page(offset=0):
+    """ساخت متن صفحه کاربران ربات همراه با تاریخ عضویت هر کاربر"""
+    total = get_users_count()
+    if total == 0:
+        return "📋 هنوز هیچ کاربری در ربات ثبت نشده است.", None
+
+    offset = _clamp_log_offset(offset, total, USERS_LOG_PAGE_SIZE)
+    users = get_users_log(limit=USERS_LOG_PAGE_SIZE, offset=offset)
+    stats = get_users_stats()
+
+    lines = [
+        "📋 کاربران ربات",
+        "",
+        f"👥 کل کاربران: {stats['total_users']}",
+        f"🆕 عضویت امروز: {stats['new_users_today']}",
+        f"🟢 کاربران فعال امروز: {stats['active_users_today']}",
+        f"📊 کل استفاده از ربات: {stats['total_usage']}",
+        "",
+        "──────────────────",
+    ]
+
+    for index, user in enumerate(users, start=offset + 1):
+        lines.append(
+            f"{index}) 👤 {format_user_display(user['user_id'], user.get('first_name'), user.get('username'))}"
+        )
+        lines.append(
+            f"   🗓 عضویت در ربات: {format_persian_datetime(user.get('joined_at'))}"
+        )
+        lines.append(
+            f"   🕐 آخرین فعالیت: {format_persian_datetime(user.get('last_seen'))}"
+        )
+        lines.append(
+            f"   📊 تعداد استفاده: {user.get('usage_count') or 0}"
+            f" | 📸 درخواست عکس: {user.get('requests_count') or 0}"
+        )
+        lines.append("")
+
+    total_pages = ((total - 1) // USERS_LOG_PAGE_SIZE) + 1
+    lines.append(f"📄 صفحه {(offset // USERS_LOG_PAGE_SIZE) + 1} از {total_pages}")
+
+    text = "\n".join(lines)
+    if len(text) > 3900:
+        text = text[:3900] + "\n…"
+
+    return text, _log_page_keyboard("users_log", offset, USERS_LOG_PAGE_SIZE, total)
+
+
+def build_usage_log_page(offset=0):
+    """ساخت متن صفحه لاگ استفاده از ربات (چه کسی، چه زمانی و تاریخ عضویتش)"""
+    total = get_usage_logs_count()
+    if total == 0:
+        return "🧾 هنوز هیچ استفاده‌ای از ربات ثبت نشده است.", None
+
+    offset = _clamp_log_offset(offset, total, USAGE_LOG_PAGE_SIZE)
+    logs = get_usage_logs(limit=USAGE_LOG_PAGE_SIZE, offset=offset)
+    stats = get_users_stats()
+
+    lines = [
+        "🧾 لاگ استفاده از ربات",
+        "",
+        f"📊 استفاده امروز: {stats['usage_today']}",
+        f"🟢 کاربران فعال امروز: {stats['active_users_today']}",
+        f"👣 کل استفاده‌ها: {stats['total_usage']}",
+        "",
+        "──────────────────",
+    ]
+
+    for index, item in enumerate(logs, start=offset + 1):
+        lines.append(f"{index}) 🕐 {format_persian_datetime(item.get('created_at'))}")
+        lines.append(
+            f"   👤 {format_user_display(item['user_id'], item.get('first_name'), item.get('username'))}"
+        )
+        lines.append(
+            f"   🗓 عضویت در ربات: {format_persian_datetime(item.get('joined_at'), with_time=False)}"
+        )
+        lines.append(f"   📌 عمل انجام‌شده: {item.get('action') or 'نامشخص'}")
+        if item.get("detail"):
+            lines.append(f"   📝 {item['detail']}")
+        lines.append("")
+
+    total_pages = ((total - 1) // USAGE_LOG_PAGE_SIZE) + 1
+    lines.append(f"📄 صفحه {(offset // USAGE_LOG_PAGE_SIZE) + 1} از {total_pages}")
+
+    text = "\n".join(lines)
+    if len(text) > 3900:
+        text = text[:3900] + "\n…"
+
+    return text, _log_page_keyboard("usage_log", offset, USAGE_LOG_PAGE_SIZE, total)
+
+
 async def admin_pending_branch(
     update: Update, context: ContextTypes.DEFAULT_TYPE, branch: str
 ):
@@ -889,6 +1173,12 @@ async def handle_star_selection(update: Update, context: ContextTypes.DEFAULT_TY
     rating = star_count
     save_survey(user_id, rating, None, branch)
 
+    log_user_activity(
+        update.effective_user,
+        "ثبت نظرسنجی رضایت",
+        detail=f"امتیاز {rating} از 5 | شعبه {'مشهد' if branch == 'mashhad' else 'تهران'}",
+    )
+
     context.user_data["survey_step"] = None
 
     if rating == 5:
@@ -960,6 +1250,12 @@ async def survey_response_handler(update: Update, context: ContextTypes.DEFAULT_
             rating = context.user_data.get("survey_rating", 0)
             save_survey(user_id, rating, text, branch)
 
+            log_user_activity(
+                update.effective_user,
+                "ثبت نظر/نارضایتی",
+                detail=f"امتیاز {rating if rating > 0 else 'بدون امتیاز'} | شعبه {'مشهد' if branch == 'mashhad' else 'تهران'}",
+            )
+
             complaint_group = (
                 GROUP_MASHHAD_COMPLAINT
                 if branch == "mashhad"
@@ -1026,6 +1322,8 @@ async def start(update, context):
     user_id = update.effective_user.id
     user_name = update.effective_user.first_name or "کاربر گرامی"
 
+    log_user_activity(update.effective_user, "شروع ربات (/start)")
+
     if not await real_member(context, user_id):
         msg = await update.message.reply_text(
             f"سلام {user_name} عزیز!\n\n"
@@ -1072,6 +1370,7 @@ async def check_callback(update, context):
     user_name = query.from_user.first_name or "کاربر گرامی"
 
     if await real_member(context, user_id):
+        log_user_activity(query.from_user, "بررسی عضویت در کانال (تایید شد)")
         await query.delete_message()
 
         await context.bot.send_message(
@@ -1183,6 +1482,8 @@ async def support_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_name = update.effective_user.first_name or "کاربر گرامی"
 
+    log_user_activity(update.effective_user, "درخواست پشتیبانی")
+
     keyboard = InlineKeyboardMarkup(
         [
             [
@@ -1223,6 +1524,17 @@ async def handle_all_messages(update, context):
         )
         context.user_data["start_message_id"] = msg.message_id
         return
+
+    # ===== ثبت لاگ استفاده از ربات (چه کسی، چه زمانی و با چه تاریخ عضویتی) =====
+    log_user_activity(
+        update.effective_user,
+        build_usage_action(text, context.user_data.get("photo_step")),
+        detail=(
+            f"شعبه: {'مشهد' if context.user_data.get('branch') == 'mashhad' else 'تهران'}"
+            if context.user_data.get("branch")
+            else None
+        ),
+    )
 
     if text in ["بله، عکس دیگری دارم", "نه، تمام شد"] and context.user_data.get(
         "admin_upload"
@@ -1336,6 +1648,14 @@ async def handle_all_messages(update, context):
         await admin_stats(update, context)
         return
 
+    elif text == "📋 کاربران ربات":
+        await admin_users_log(update, context)
+        return
+
+    elif text == "🧾 لاگ استفاده از ربات":
+        await admin_usage_log(update, context)
+        return
+
     elif text == "⏳ در انتظار - مشهد":
         await admin_pending_branch(update, context, "mashhad")
         return
@@ -1429,6 +1749,9 @@ async def handle_all_messages(update, context):
                         photo_date=photo_date,
                         branch=photo_branch,
                     )
+                    log_photo_request_activity(
+                        update.effective_user, phone, photo_code, photo_branch
+                    )
                     await update.message.reply_text(
                         "✅ عکس شما ارسال شد!\n\n"
                         "از اینکه رستوران پسران کریم را انتخاب کردید سپاسگزاریم🌹",
@@ -1447,6 +1770,9 @@ async def handle_all_messages(update, context):
                 photo_code=photo_code,
                 photo_date=photo_date,
                 branch=photo_branch,
+            )
+            log_photo_request_activity(
+                update.effective_user, phone, photo_code, photo_branch
             )
             await update.message.reply_text(
                 "درخواست شما ثبت شد✅\n\n"
@@ -2001,6 +2327,10 @@ async def handle_all_messages(update, context):
                         branch=photo_branch,
                     )
 
+                    log_photo_request_activity(
+                        update.effective_user, phone, photo_code, photo_branch
+                    )
+
                     await update.message.reply_text(
                         "فایل اصلی عکستون با کیفیت بالا تقدیم محضر باسعادتتون🙏😇🌹\n\n"
                         "چنانچه تمایل دارید عکسهای زیبایتان در صفحه ما استوری شود قبول زحمت بفرمایید با یک پیج غیر پرایوت، آن را استوری کرده و مارا تگ نمایید تا بتوانیم اد استوری کرده و انجام وظیفه کنیم😍🙏🌹\n\n"
@@ -2022,6 +2352,10 @@ async def handle_all_messages(update, context):
                 photo_code=photo_code,
                 photo_date=photo_date,
                 branch=photo_branch,
+            )
+
+            log_photo_request_activity(
+                update.effective_user, phone, photo_code, photo_branch
             )
 
             await update.message.reply_text(
@@ -2324,6 +2658,8 @@ def main():
 
     app.add_handler(CallbackQueryHandler(check_callback, pattern="check"))
     app.add_handler(CallbackQueryHandler(back_to_menu_callback, pattern="back_to_menu"))
+    app.add_handler(CallbackQueryHandler(users_log_callback, pattern="users_log"))
+    app.add_handler(CallbackQueryHandler(usage_log_callback, pattern="usage_log"))
 
     app.add_handler(
         MessageHandler(

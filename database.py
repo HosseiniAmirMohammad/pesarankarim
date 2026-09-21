@@ -185,6 +185,30 @@ def init_db():
         FOREIGN KEY (blocked_by) REFERENCES admins(user_id)
     )""")
 
+    # ===== ۹. جدول کاربران ربات (تاریخ عضویت در ربات) =====
+    # اولین باری که کاربر ربات را استفاده کند، به عنوان عضو ربات با تاریخ عضویت ثبت می‌شود
+    c.execute("""CREATE TABLE IF NOT EXISTS users (
+        user_id INTEGER PRIMARY KEY,
+        username TEXT,
+        first_name TEXT,
+        last_name TEXT,
+        joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        usage_count INTEGER DEFAULT 0
+    )""")
+
+    # ===== ۱۰. جدول لاگ استفاده از ربات =====
+    # هر بار استفاده کاربر از ربات (فشردن دکمه‌ها، ثبت درخواست، نظرسنجی و ...) در این جدول ثبت می‌شود
+    c.execute("""CREATE TABLE IF NOT EXISTS usage_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        username TEXT,
+        first_name TEXT,
+        action TEXT,
+        detail TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )""")
+
     # ایجاد ایندکس‌ها برای سرعت بیشتر
     c.execute(
         "CREATE INDEX IF NOT EXISTS idx_photo_requests_user_id ON photo_requests(user_id)"
@@ -219,6 +243,26 @@ def init_db():
     c.execute(
         "CREATE INDEX IF NOT EXISTS idx_preuploaded_photos_used ON preuploaded_photos(used)"
     )
+    c.execute("CREATE INDEX IF NOT EXISTS idx_users_joined_at ON users(joined_at)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_users_last_seen ON users(last_seen)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_usage_logs_user_id ON usage_logs(user_id)")
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_usage_logs_created_at ON usage_logs(created_at)"
+    )
+
+    # ===== پر کردن جدول کاربران از داده‌های قبلی ربات =====
+    # فقط زمانی اجرا می‌شود که جدول کاربران خالی باشد (یعنی یک‌بار بعد از این بروزرسانی).
+    # تاریخ عضویت این کاربران دقیق نیست و با اولین فعالیت ثبت‌شده‌شان تقریب زده می‌شود.
+    c.execute("SELECT COUNT(*) FROM users")
+    if c.fetchone()[0] == 0:
+        for source_table in ("photo_requests", "surveys"):
+            c.execute(f"""
+                INSERT OR IGNORE INTO users (user_id, joined_at, last_seen)
+                SELECT user_id, MIN(created_at), MAX(created_at)
+                FROM {source_table}
+                WHERE created_at IS NOT NULL
+                GROUP BY user_id
+            """)
 
     # ===== اطمینان از دسترسی کامل سازنده/مالک ربات =====
     # این آیدی‌ها همیشه در لیست ادمین‌ها فعال نگه داشته می‌شوند
@@ -975,6 +1019,255 @@ def get_preuploaded_photo_count(branch=None):
     result = c.fetchone()[0]
     conn.close()
     return result
+
+
+# ===== توابع لاگ کاربران ربات =====
+# زمان‌ها در دیتابیس به وقت UTC ذخیره می‌شوند؛ برای مقایسه تاریخ «امروز» به وقت ایران
+# (UTC+3:30) از این مودیفایرها استفاده می‌شود.
+IRAN_TZ_SQL = "'+3 hours', '+30 minutes'"
+
+
+def _iran_today_condition(column_name):
+    """شرط SQL برای بررسی اینکه یک ستون زمانی مربوط به امروز (به وقت ایران) است یا نه"""
+    return f"date({column_name}, {IRAN_TZ_SQL}) = date('now', {IRAN_TZ_SQL})"
+
+
+def _clean_user_field(value):
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _upsert_user(cursor, user_id, username, first_name, last_name):
+    """ثبت کاربر جدید (همراه تاریخ عضویت) یا بروزرسانی اطلاعات کاربر موجود"""
+    cursor.execute(
+        """
+        INSERT OR IGNORE INTO users (user_id, username, first_name, last_name, joined_at, last_seen, usage_count)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0)
+    """,
+        (user_id, username, first_name, last_name),
+    )
+    cursor.execute(
+        """
+        UPDATE users
+        SET username = COALESCE(?, username),
+            first_name = COALESCE(?, first_name),
+            last_name = COALESCE(?, last_name),
+            last_seen = CURRENT_TIMESTAMP
+        WHERE user_id = ?
+    """,
+        (username, first_name, last_name, user_id),
+    )
+
+
+def register_user(user_id, username=None, first_name=None, last_name=None):
+    """ثبت کاربر در جدول کاربران ربات
+
+    اولین باری که کاربر با ربات کار کند، تاریخ عضویت او ثبت می‌شود و در
+    استفاده‌های بعدی فقط اطلاعات و آخرین فعالیتش به‌روز می‌شود.
+    """
+    if user_id is None:
+        return None
+
+    username = _clean_user_field(username)
+    first_name = _clean_user_field(first_name)
+    last_name = _clean_user_field(last_name)
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        _upsert_user(c, user_id, username, first_name, last_name)
+        conn.commit()
+        c.execute(
+            """
+            SELECT user_id, username, first_name, last_name, joined_at, last_seen, usage_count
+            FROM users WHERE user_id = ?
+        """,
+            (user_id,),
+        )
+        row = c.fetchone()
+        return dict(row) if row else None
+    except Exception as e:
+        print(f"❌ خطا در ثبت کاربر ربات: {e}")
+        return None
+    finally:
+        conn.close()
+
+
+def log_bot_usage(
+    user_id, action, detail=None, username=None, first_name=None, last_name=None
+):
+    """ثبت یک استفاده از ربات همراه با تاریخ عضویت کاربر
+
+    اگر کاربر برای اولین بار باشد، ابتدا در جدول کاربران ثبت می‌شود و بعد
+    لاگ استفاده از ربات برایش درج می‌گردد.
+    """
+    if user_id is None:
+        return False
+
+    username = _clean_user_field(username)
+    first_name = _clean_user_field(first_name)
+    last_name = _clean_user_field(last_name)
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        # ثبت کاربر در اولین استفاده (تاریخ عضویت) و بروزرسانی اطلاعاتش
+        _upsert_user(c, user_id, username, first_name, last_name)
+        c.execute(
+            """
+            UPDATE users
+            SET usage_count = COALESCE(usage_count, 0) + 1,
+                last_seen = CURRENT_TIMESTAMP
+            WHERE user_id = ?
+        """,
+            (user_id,),
+        )
+        c.execute(
+            """
+            INSERT INTO usage_logs (user_id, username, first_name, action, detail, created_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """,
+            (
+                user_id,
+                username,
+                first_name,
+                _clean_user_field(action) or "نامشخص",
+                _clean_user_field(detail),
+            ),
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"❌ خطا در ثبت لاگ استفاده از ربات: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def get_users_count():
+    """تعداد کل کاربرانی که ربات را استفاده کرده‌اند"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM users")
+    total = c.fetchone()[0]
+    conn.close()
+    return total
+
+
+def get_users_log(limit=10, offset=0):
+    """لیست کاربران ربات همراه با تاریخ عضویت، آخرین فعالیت و تعداد استفاده"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT u.user_id, u.username, u.first_name, u.last_name, u.joined_at, u.last_seen,
+               COALESCE(u.usage_count, 0) AS usage_count,
+               (SELECT COUNT(*) FROM photo_requests pr WHERE pr.user_id = u.user_id) AS requests_count,
+               (SELECT COUNT(*) FROM surveys s WHERE s.user_id = u.user_id) AS surveys_count
+        FROM users u
+        ORDER BY u.joined_at DESC, u.user_id DESC
+        LIMIT ? OFFSET ?
+    """,
+        (limit, offset),
+    )
+    result = c.fetchall()
+    conn.close()
+    return [dict(row) for row in result]
+
+
+def get_usage_logs_count(user_id=None):
+    """تعداد کل رکوردهای لاگ استفاده از ربات"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    if user_id is None:
+        c.execute("SELECT COUNT(*) FROM usage_logs")
+    else:
+        c.execute("SELECT COUNT(*) FROM usage_logs WHERE user_id = ?", (user_id,))
+    total = c.fetchone()[0]
+    conn.close()
+    return total
+
+
+def get_usage_logs(limit=10, offset=0, user_id=None):
+    """آخرین استفاده‌های انجام‌شده از ربات همراه با تاریخ عضویت کاربر"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    base_query = """
+        SELECT l.id, l.user_id,
+               COALESCE(l.username, u.username) AS username,
+               COALESCE(l.first_name, u.first_name) AS first_name,
+               l.action, l.detail, l.created_at,
+               u.joined_at, COALESCE(u.usage_count, 0) AS usage_count
+        FROM usage_logs l
+        LEFT JOIN users u ON u.user_id = l.user_id
+    """
+    if user_id is None:
+        c.execute(
+            base_query + " ORDER BY l.id DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        )
+    else:
+        c.execute(
+            base_query + " WHERE l.user_id = ? ORDER BY l.id DESC LIMIT ? OFFSET ?",
+            (user_id, limit, offset),
+        )
+    result = c.fetchall()
+    conn.close()
+    return [dict(row) for row in result]
+
+
+def get_users_stats():
+    """آمار کاربران ربات و لاگ استفاده از آن (روز جاری به وقت ایران)"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    stats = {}
+
+    c.execute("SELECT COUNT(*) FROM users")
+    stats["total_users"] = c.fetchone()[0]
+
+    c.execute(f"SELECT COUNT(*) FROM users WHERE {_iran_today_condition('joined_at')}")
+    stats["new_users_today"] = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM usage_logs")
+    stats["total_usage"] = c.fetchone()[0]
+
+    c.execute(
+        f"SELECT COUNT(*) FROM usage_logs WHERE {_iran_today_condition('created_at')}"
+    )
+    stats["usage_today"] = c.fetchone()[0]
+
+    c.execute(
+        f"SELECT COUNT(DISTINCT user_id) FROM usage_logs WHERE {_iran_today_condition('created_at')}"
+    )
+    stats["active_users_today"] = c.fetchone()[0]
+
+    conn.close()
+    return stats
+
+
+def delete_old_usage_logs(days=180):
+    """حذف لاگ‌های قدیمی‌تر از تعداد روز مشخص (برای جلوگیری از بزرگ شدن دیتابیس)"""
+    try:
+        days = int(days)
+    except (TypeError, ValueError):
+        return False
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute(
+            "DELETE FROM usage_logs WHERE created_at < datetime('now', ?)",
+            (f"-{days} days",),
+        )
+        conn.commit()
+        return c.rowcount
+    except Exception as e:
+        print(f"❌ خطا در پاک‌سازی لاگ‌های قدیمی: {e}")
+        return False
+    finally:
+        conn.close()
 
 
 # ===== توابع تنظیمات =====
