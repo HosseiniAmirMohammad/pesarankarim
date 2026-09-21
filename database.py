@@ -209,6 +209,30 @@ def init_db():
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )""")
 
+    # ===== ۱۱. جدول دریافت امتیاز نظرسنجی (نظر ۵ ستاره در گوگل مپ) =====
+    # وقتی مشتری روی دکمه «دریافت امتیاز» می‌زند، در این جدول ثبت می‌شود تا
+    # مدیر بتواند بررسی و تایید کند که نظر ۵ ستاره واقعا ثبت شده است.
+    c.execute("""CREATE TABLE IF NOT EXISTS review_rewards (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        phone TEXT,
+        branch TEXT DEFAULT 'mashhad',
+        status TEXT DEFAULT 'claimed',
+        claimed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )""")
+
+    # ===== ۱۲. جدول گیف/ویدیوی نظرسنجی هر شعبه =====
+    # گیفی که بعد از اعلام رضایت ۵ ستاره برای مشتری فرستاده می‌شود. مدیر می‌تواند آن
+    # را از پنل مدیریت (بخش «🎬 گیف نظرسنجی») ثبت یا تغییر دهد؛ اگر چیزی ثبت نشده
+    # باشد، پیام گیف گروه لیست انتظار همان شعبه برای مشتری کپی می‌شود.
+    c.execute("""CREATE TABLE IF NOT EXISTS review_gifs (
+        branch TEXT PRIMARY KEY,
+        file_id TEXT NOT NULL,
+        file_type TEXT DEFAULT 'animation',
+        caption TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )""")
+
     # ایجاد ایندکس‌ها برای سرعت بیشتر
     c.execute(
         "CREATE INDEX IF NOT EXISTS idx_photo_requests_user_id ON photo_requests(user_id)"
@@ -248,6 +272,12 @@ def init_db():
     c.execute("CREATE INDEX IF NOT EXISTS idx_usage_logs_user_id ON usage_logs(user_id)")
     c.execute(
         "CREATE INDEX IF NOT EXISTS idx_usage_logs_created_at ON usage_logs(created_at)"
+    )
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_review_rewards_user_id ON review_rewards(user_id)"
+    )
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_review_rewards_claimed_at ON review_rewards(claimed_at)"
     )
 
     # ===== پر کردن جدول کاربران از داده‌های قبلی ربات =====
@@ -615,23 +645,55 @@ def unblock_user(user_id):
 
 
 # ===== توابع درخواست عکس =====
-def save_photo_request(user_id, phone, photo_code, photo_date, branch):
-    """ذخیره درخواست عکس جدید با شعبه"""
+def save_photo_request(
+    user_id, phone, photo_code, photo_date, branch, status="pending"
+):
+    """ذخیره درخواست عکس جدید با شعبه
+
+    اگر status = 'sent' باشد یعنی عکس مشتری از قبل آپلود شده بوده و به‌صورت
+    خودکار برای او ارسال شده است؛ در این حالت این درخواست در لیست انتظار
+    گروه‌های شعبه نمایش داده نمی‌شود.
+    """
+    status = "sent" if str(status).lower() == "sent" else "pending"
+
     conn = get_db_connection()
     c = conn.cursor()
     try:
         c.execute(
             """
-            INSERT INTO photo_requests (user_id, phone, photo_code, photo_date, branch, status, created_at)
-            VALUES (?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP)
+            INSERT INTO photo_requests (user_id, phone, photo_code, photo_date, branch, status, created_at, sent_at)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP,
+                    CASE WHEN ? = 'sent' THEN CURRENT_TIMESTAMP ELSE NULL END)
         """,
-            (user_id, phone, photo_code, photo_date, branch),
+            (user_id, phone, photo_code, photo_date, branch, status, status),
         )
         conn.commit()
         return c.lastrowid
     except Exception as e:
         print(f"❌ خطا در ذخیره درخواست: {e}")
         return None
+    finally:
+        conn.close()
+
+
+def mark_request_as_sent(phone, photo_code, branch):
+    """علامت‌گذاری درخواست در انتظار به عنوان ارسال‌شده (بعد از ارسال عکس)"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute(
+            """
+            UPDATE photo_requests
+            SET status = 'sent', sent_at = CURRENT_TIMESTAMP, failed_reason = NULL
+            WHERE phone = ? AND photo_code = ? AND branch = ? AND status = 'pending'
+        """,
+            (phone, photo_code, branch),
+        )
+        conn.commit()
+        return c.rowcount
+    except Exception as e:
+        print(f"❌ خطا در بروزرسانی وضعیت درخواست: {e}")
+        return 0
     finally:
         conn.close()
 
@@ -979,6 +1041,33 @@ def get_pending_requests(branch=None):
     return result
 
 
+def get_pending_requests_with_users(branch=None):
+    """دریافت درخواست‌های در انتظار همراه با اطلاعات کاربر و مدت انتظار (ساعت)
+
+    برای ارسال لیست کاربران منتظر دریافت عکس به گروه لیست انتظار استفاده می‌شود.
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    base_query = """
+        SELECT pr.id, pr.user_id, pr.phone, pr.photo_code, pr.photo_date, pr.branch,
+               pr.created_at,
+               u.first_name, u.username, u.joined_at,
+               (strftime('%s', 'now') - strftime('%s', pr.created_at)) / 3600 AS hours
+        FROM photo_requests pr
+        LEFT JOIN users u ON u.user_id = pr.user_id
+        WHERE pr.status = 'pending'
+    """
+    if branch:
+        c.execute(
+            base_query + " AND pr.branch = ? ORDER BY pr.created_at ASC", (branch,)
+        )
+    else:
+        c.execute(base_query + " ORDER BY pr.created_at ASC")
+    result = c.fetchall()
+    conn.close()
+    return [dict(row) for row in result]
+
+
 def get_failed_requests(branch=None):
     """دریافت لیست ارسال‌های ناموفق بر اساس شعبه"""
     conn = get_db_connection()
@@ -1144,6 +1233,216 @@ def log_bot_usage(
         return False
     finally:
         conn.close()
+
+
+def update_survey_comment(survey_id, comment):
+    """ثبت/بروزرسانی دلیل نارضایتی روی همان رکورد نظرسنجی (جلوگیری از رکورد تکراری)"""
+    if not survey_id:
+        return False
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute("UPDATE surveys SET comment = ? WHERE id = ?", (comment, survey_id))
+        conn.commit()
+        return c.rowcount > 0
+    except Exception as e:
+        print(f"❌ خطا در بروزرسانی دلیل نارضایتی: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def get_last_request_phone(user_id):
+    """شماره تلفن آخرین درخواست عکس کاربر (برای ثبت امتیاز نظرسنجی)"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT phone FROM photo_requests
+        WHERE user_id = ?
+        ORDER BY created_at DESC, id DESC LIMIT 1
+    """,
+        (user_id,),
+    )
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+# ===== توابع دریافت امتیاز نظرسنجی (نظر ۵ ستاره در گوگل مپ) =====
+def save_review_reward(user_id, phone=None, branch="mashhad", status="claimed"):
+    """ثبت دریافت امتیاز توسط کاربر؛ خروجی شامل تعداد کل اعلام‌های این کاربر است"""
+    if user_id is None:
+        return None
+
+    branch = "tehran" if str(branch).strip().lower() == "tehran" else "mashhad"
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute(
+            """
+            INSERT INTO review_rewards (user_id, phone, branch, status, claimed_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """,
+            (user_id, _clean_user_field(phone), branch, status or "claimed"),
+        )
+        reward_id = c.lastrowid
+        c.execute(
+            "SELECT COUNT(*) FROM review_rewards WHERE user_id = ? AND branch = ?",
+            (user_id, branch),
+        )
+        claims_count = c.fetchone()[0]
+        conn.commit()
+        return {"id": reward_id, "claims_count": claims_count}
+    except Exception as e:
+        print(f"❌ خطا در ثبت دریافت امتیاز: {e}")
+        return None
+    finally:
+        conn.close()
+
+
+def get_review_rewards(limit=10, offset=0, branch=None):
+    """لیست اعلام‌های دریافت امتیاز همراه با اطلاعات کاربر"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    base_query = """
+        SELECT r.id, r.user_id, r.phone, r.branch, r.status, r.claimed_at,
+               u.first_name, u.username, u.joined_at
+        FROM review_rewards r
+        LEFT JOIN users u ON u.user_id = r.user_id
+    """
+    if branch:
+        c.execute(
+            base_query + " WHERE r.branch = ? ORDER BY r.id DESC LIMIT ? OFFSET ?",
+            (branch, limit, offset),
+        )
+    else:
+        c.execute(
+            base_query + " ORDER BY r.id DESC LIMIT ? OFFSET ?", (limit, offset)
+        )
+    result = c.fetchall()
+    conn.close()
+    return [dict(row) for row in result]
+
+
+def get_review_rewards_count(branch=None):
+    """تعداد کل اعلام‌های دریافت امتیاز"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    if branch:
+        c.execute("SELECT COUNT(*) FROM review_rewards WHERE branch = ?", (branch,))
+    else:
+        c.execute("SELECT COUNT(*) FROM review_rewards")
+    total = c.fetchone()[0]
+    conn.close()
+    return total
+
+
+def normalize_branch(branch):
+    """نرمال‌سازی نام شعبه (فقط مشهد یا تهران)"""
+    return "tehran" if str(branch).strip().lower() == "tehran" else "mashhad"
+
+
+def get_review_rewards_stats():
+    """آمار اعلام‌های دریافت امتیاز (روز جاری به وقت ایران)"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    stats = {}
+
+    c.execute("SELECT COUNT(*) FROM review_rewards")
+    stats["total_claims"] = c.fetchone()[0]
+
+    c.execute(
+        f"SELECT COUNT(*) FROM review_rewards WHERE {_iran_today_condition('claimed_at')}"
+    )
+    stats["claims_today"] = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(DISTINCT user_id) FROM review_rewards")
+    stats["unique_users"] = c.fetchone()[0]
+
+    conn.close()
+    return stats
+
+
+# ===== توابع گیف نظرسنجی (پیام گیف بعد از اعلام رضایت ۵ ستاره) =====
+def save_review_gif(branch, file_id, file_type="animation", caption=None):
+    """ثبت/بروزرسانی گیف نظرسنجی یک شعبه (با file_id ارسالی ادمین)"""
+    if not file_id:
+        return False
+
+    branch = normalize_branch(branch)
+    file_type = (file_type or "animation").strip().lower()
+    if file_type not in ("animation", "video", "document"):
+        file_type = "animation"
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute(
+            """
+            INSERT INTO review_gifs (branch, file_id, file_type, caption, updated_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(branch) DO UPDATE SET
+                file_id = excluded.file_id,
+                file_type = excluded.file_type,
+                caption = excluded.caption,
+                updated_at = CURRENT_TIMESTAMP
+        """,
+            (branch, file_id, file_type, _clean_user_field(caption)),
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"❌ خطا در ثبت گیف نظرسنجی: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def get_review_gif(branch):
+    """گیف ثبت‌شده یک شعبه (None اگر ثبت نشده باشد)"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT file_id, file_type, caption FROM review_gifs WHERE branch = ?",
+        (normalize_branch(branch),),
+    )
+    row = c.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def clear_review_gif(branch):
+    """حذف گیف ثبت‌شده یک شعبه"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute("DELETE FROM review_gifs WHERE branch = ?", (normalize_branch(branch),))
+        conn.commit()
+        return c.rowcount > 0
+    except Exception as e:
+        print(f"❌ خطا در حذف گیف نظرسنجی: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def get_user_record(user_id):
+    """دریافت اطلاعات ثبت‌شده یک کاربر ربات (شامل تاریخ عضویت)"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT user_id, username, first_name, last_name, joined_at, last_seen, usage_count
+        FROM users WHERE user_id = ?
+    """,
+        (user_id,),
+    )
+    row = c.fetchone()
+    conn.close()
+    return dict(row) if row else None
 
 
 def get_users_count():

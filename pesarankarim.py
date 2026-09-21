@@ -36,7 +36,20 @@ from database import (
     get_users_stats,
     get_usage_logs,
     get_usage_logs_count,
+    get_user_record,
+    get_pending_requests_with_users,
+    mark_request_as_sent,
+    update_survey_comment,
+    get_last_request_phone,
+    save_review_reward,
+    get_review_rewards,
+    get_review_rewards_count,
+    get_review_rewards_stats,
+    save_review_gif,
+    get_review_gif,
+    clear_review_gif,
 )
+import asyncio
 import jdatetime
 import re
 from datetime import datetime, timedelta, timezone
@@ -147,6 +160,7 @@ def extract_phone_and_code(raw_text):
 IRAN_TIMEZONE = timezone(timedelta(hours=3, minutes=30))
 USERS_LOG_PAGE_SIZE = 10
 USAGE_LOG_PAGE_SIZE = 10
+REWARD_CLAIMS_PAGE_SIZE = 10
 
 # برچسب خوانا برای ورودی‌های وسط فرایند ثبت عکس
 STEP_USAGE_LABELS = {
@@ -247,6 +261,191 @@ def log_photo_request_activity(user, phone, photo_code, branch):
         "ثبت درخواست عکس یادگاری",
         detail=f"تلفن: {phone} | کد: {photo_code} | شعبه: {branch_name}",
     )
+
+
+# ===== گروه‌های لیست انتظار دریافت عکس =====
+def normalize_group_chat_id(chat_id):
+    """اصلاح آیدی گروه/کانال تلگرام
+
+    آیدی سوپرگروه‌ها در تلگرام با -100 شروع می‌شود؛ اگر آیدی بدون منفی وارد
+    شده باشد (مثل 1004355675580)، همین تابع آن را اصلاح می‌کند.
+    """
+    try:
+        value = int(str(chat_id).strip())
+    except (TypeError, ValueError):
+        return None
+
+    if value <= 0:
+        return value
+
+    text = str(value)
+    if not text.startswith("100"):
+        text = "100" + text
+    return int("-" + text)
+
+
+def waiting_group_chat_id(branch):
+    """آیدی گروه لیست انتظار هر شعبه"""
+    chat_id = GROUP_TEHRAN_WAITING if branch == "tehran" else GROUP_MASHHAD_WAITING
+    return normalize_group_chat_id(chat_id)
+
+
+def branch_display_name(branch):
+    """نام نمایشی شعبه"""
+    return "مشهد (خیام)" if branch == "mashhad" else "تهران (هتل پارسیان آزادی)"
+
+
+def split_message_text(text, limit=3900):
+    """شکستن متن‌های بلند به چند پیام (محدودیت ۴۰۹۶ کاراکتری تلگرام)"""
+    if len(text) <= limit:
+        return [text]
+
+    chunks = []
+    current = ""
+    for line in text.split("\n"):
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) > limit:
+            if current:
+                chunks.append(current)
+            current = line[:limit]
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def waiting_list_text(branch):
+    """متن لیست کاربران در انتظار دریافت عکس (None اگر کسی در انتظار نباشد)"""
+    rows = get_pending_requests_with_users(branch)
+    if not rows:
+        return None
+
+    lines = [
+        f"⏳ لیست کاربران در انتظار دریافت عکس — شعبه {branch_display_name(branch)}",
+        f"🕐 زمان گزارش: {jdatetime.datetime.now().strftime('%Y/%m/%d - %H:%M')}",
+        f"📊 تعداد در انتظار: {len(rows)} نفر",
+        "",
+        "──────────────────",
+    ]
+
+    for index, row in enumerate(rows, start=1):
+        hours = int(row.get("hours") or 0)
+        if hours >= 24:
+            waiting_text = f"{hours // 24} روز"
+        else:
+            waiting_text = f"{hours} ساعت"
+
+        lines.append(
+            f"{index}) 👤 {format_user_display(row['user_id'], row.get('first_name'), row.get('username'))}"
+        )
+        lines.append(
+            f"   🗓 عضویت در ربات: {format_persian_datetime(row.get('joined_at'), with_time=False)}"
+        )
+        lines.append(f"   📱 شماره: {row['phone']} | 🏷️ کد عکس: {row['photo_code']}")
+        lines.append(
+            f"   📅 تاریخ عکس: {row.get('photo_date') or 'نامشخص'} | ⏰ در انتظار: {waiting_text}"
+        )
+        lines.append("")
+
+    lines.append(
+        f"✅ این لیست هر {WAITING_LIST_INTERVAL_HOURS} ساعت یک‌بار ارسال می‌شود و با "
+        "ارسال هر عکس، درخواست مربوطه از این لیست حذف می‌شود."
+    )
+    return "\n".join(lines)
+
+
+async def send_waiting_list_to_group(bot, branch):
+    """ارسال لیست کاربران در انتظار دریافت عکس به گروه لیست انتظار شعبه"""
+    chat_id = waiting_group_chat_id(branch)
+    if not chat_id:
+        print(f"⚠️ آیدی گروه لیست انتظار شعبه {branch} تنظیم نشده است.")
+        return False
+
+    text = waiting_list_text(branch)
+    if not text:
+        print(f"ℹ️ لیست انتظار شعبه {branch} خالی است؛ پیامی ارسال نشد.")
+        return False
+
+    for chunk in split_message_text(text):
+        await bot.send_message(chat_id=chat_id, text=chunk)
+    return True
+
+
+async def notify_waiting_group(
+    context, user, branch, phone, photo_code, photo_date, photo_sent=False
+):
+    """اطلاع‌رسانی درخواست جدید در گروه لیست انتظار شعبه مربوطه"""
+    chat_id = waiting_group_chat_id(branch)
+    if not chat_id:
+        print(f"⚠️ آیدی گروه لیست انتظار شعبه {branch} تنظیم نشده است.")
+        return False
+
+    user_record = get_user_record(user.id) or {}
+    status_line = (
+        "✅ عکس این کاربر از قبل آپلود شده بود و به‌صورت خودکار برای او ارسال شد."
+        if photo_sent
+        else "⏳ لطفا عکس این کاربر ارسال شود."
+    )
+
+    text = (
+        "📸 درخواست عکس یادگاری جدید\n\n"
+        f"📍 شعبه: {branch_display_name(branch)}\n"
+        f"👤 کاربر: {format_user_display(user.id, getattr(user, 'first_name', None), getattr(user, 'username', None))}\n"
+        f"🗓 عضویت در ربات: {format_persian_datetime(user_record.get('joined_at'))}\n"
+        f"📱 شماره: {phone}\n"
+        f"🏷️ کد عکس: {photo_code}\n"
+        f"📅 تاریخ عکس: {photo_date or 'نامشخص'}\n"
+        f"🕐 زمان درخواست: {jdatetime.datetime.now().strftime('%Y/%m/%d - %H:%M')}\n\n"
+        f"{status_line}"
+    )
+
+    try:
+        await context.bot.send_message(chat_id=chat_id, text=text)
+        return True
+    except Exception as e:
+        print(f"❌ خطا در ارسال پیام به گروه لیست انتظار شعبه {branch}: {e}")
+        return False
+
+
+async def handle_new_photo_request(
+    context, user, branch, phone, photo_code, photo_date, photo_sent=False
+):
+    """لاگ درخواست جدید + اطلاع‌رسانی به گروه لیست انتظار شعبه"""
+    log_photo_request_activity(user, phone, photo_code, branch)
+    await notify_waiting_group(
+        context,
+        user,
+        branch,
+        phone,
+        photo_code,
+        photo_date,
+        photo_sent=photo_sent,
+    )
+
+
+async def waiting_list_scheduler(app):
+    """ارسال دوره‌ای لیست کاربران در انتظار دریافت عکس به گروه‌های لیست انتظار"""
+    interval_seconds = max(300, int(float(WAITING_LIST_INTERVAL_HOURS) * 3600))
+    print(
+        "⏰ ارسال دوره‌ای لیست انتظار فعال شد "
+        f"(هر {WAITING_LIST_INTERVAL_HOURS} ساعت) | "
+        f"مشهد: {waiting_group_chat_id('mashhad')} | "
+        f"تهران: {waiting_group_chat_id('tehran')}"
+    )
+
+    while True:
+        await asyncio.sleep(interval_seconds)
+        for branch in ("mashhad", "tehran"):
+            try:
+                await send_waiting_list_to_group(app.bot, branch)
+            except Exception as e:
+                print(f"❌ خطا در ارسال لیست انتظار شعبه {branch}: {e}")
+
+
+async def on_startup(app):
+    """کارهای بعد از آماده شدن ربات (شروع زمان‌بند لیست انتظار)"""
+    asyncio.create_task(waiting_list_scheduler(app))
 
 
 async def real_member(context, user_id):
@@ -365,10 +564,39 @@ BTN_ADMIN_RESEND = KeyboardButton("ارسال مجدد")
 BTN_ADMIN_MANAGE = KeyboardButton("👥 مدیریت ادمین‌ها")
 BTN_ADMIN_USERS_LOG = KeyboardButton("📋 کاربران ربات")
 BTN_ADMIN_USAGE_LOG = KeyboardButton("🧾 لاگ استفاده از ربات")
+BTN_ADMIN_SEND_WAITING_LIST = KeyboardButton("📤 ارسال لیست انتظار")
+BTN_ADMIN_REWARD_CLAIMS = KeyboardButton("🎁 دریافت‌های ۱۰ امتیاز")
+BTN_ADMIN_REVIEW_GIF = KeyboardButton("🎬 گیف نظرسنجی")
 BTN_ADMIN_BACK = KeyboardButton("🔙 بازگشت به منو")
+
+# ===== دکمه‌های ثبت گیف نظرسنجی هر شعبه (پنل مدیریت) =====
+BTN_GIF_MASHHAD = KeyboardButton("🎬 گیف مشهد")
+BTN_GIF_TEHRAN = KeyboardButton("🎬 گیف تهران")
+BTN_GIF_DELETE_MASHHAD = KeyboardButton("🗑 حذف گیف مشهد")
+BTN_GIF_DELETE_TEHRAN = KeyboardButton("🗑 حذف گیف تهران")
 
 BTN_YES = KeyboardButton("بله، عکس دیگری دارم")
 BTN_NO = KeyboardButton("نه، تمام شد")
+
+# ===== دکمه‌های نظرسنجی =====
+BTN_SURVEY_YES = KeyboardButton("بله، ۵ ستاره میدم")
+BTN_SURVEY_NO = KeyboardButton("خیر")
+
+# متن‌هایی که به عنوان پاسخ «بله» یا «خیر» در نظرسنجی پذیرفته می‌شوند
+SURVEY_YES_TEXTS = {
+    BTN_SURVEY_YES.text,
+    "بله",
+    "بله ۵ ستاره میدم",
+    "۵ ستاره میدم",
+    "بله، راضی بودم",
+}
+SURVEY_NO_TEXTS = {
+    BTN_SURVEY_NO.text,
+    "نه",
+    "نه، راضی نبودم",
+    "خیر، راضی نبودم",
+    "راضی نبودم",
+}
 
 BTN_STAR_1 = KeyboardButton("⭐")
 BTN_STAR_2 = KeyboardButton("⭐⭐")
@@ -393,11 +621,262 @@ MONTHS = [
 
 SUPPORT_USERNAME = "pesaranekarimphotos"
 
+# ===== پیام تحویل عکس یادگاری =====
+# این پیام بلافاصله بعد از ارسال عکس برای مشتری فرستاده می‌شود و بعد از آن
+# نظرسنجی رضایت شروع می‌شود.
+PHOTO_DELIVERED_MESSAGE = (
+    "فایل اصلی عکستون با کیفیت بالا تقدیم محضر باسعادتتون🙏😇🌹\n\n"
+    "سپاس از یادگاری که گذاشتید و قوت قلبی که بخشیدید🌺\n"
+    "اگر دوست دارین عکس زیباتون در اینستاگرام ما استوری شود کافیه اونو استوری کنید و آیدی ما دراینستاگرام را\n"
+    "(@pesaranekarim)\n"
+    "زیرش تگ کنین👌\n"
+    "یادتون نره حتما هم مارو فالو داشته باشید برای اطلاع از تخفیفات و اطلاعیه ها👇\n"
+    "Instagram.com/pesaranekarim\n"
+    "به سایتمون هم حتما سر بزنین😉🌹\n"
+    "www.pesaranekarim.rest"
+)
+
+# ===== پیامهای نظرسنجی =====
+SURVEY_FIVE_STAR_QUESTION = (
+    "📊 نظرسنجی رضایت\n\nاز ۵ ستاره به ما ۵ ستاره می‌دهید؟"
+)
+
+GOOGLE_REVIEW_MESSAGE = (
+    "ضمن عرض تشکر و قدردانی از رضایت شما\n"
+    "لینک کاملا رسمی و قانونی در گوگل مپ جهت اعلام نظر شما طراحی شده است\n"
+    "لطفا به این لینک ورود کرده و ضمن اعلام نظرتون در مورد کم و کِیف عملکرد رستوران، نمره ۵ ستاره را برای ما داخل گوگل مپ به یادگار بگذارید\n"
+    "این کار بالاترین هدیه شماست در جهت رشد روزافزون ما\n"
+    "👇لینک نظر دهی👇"
+)
+
+LOW_RATING_REQUEST_MESSAGE = (
+    "متاسفیم که تجربه شما مطابق انتظار ما نبوده🙏\n\n"
+    "لطفا از ۱ تا ۴ ستاره به ما امتیاز دهید:"
+)
+
+LOW_RATING_REASON_REQUEST_MESSAGE = (
+    "لطفا دلیل نارضایتی خود را کامل بنویسید تا همکاران ما آن را بررسی و پیگیری کنند:"
+)
+
+REWARD_INVITE_MESSAGE = (
+    f"🎁 هدیه {REWARD_POINTS} امتیازی\n\n"
+    f"اگر نظر ۵ ستاره خود را در گوگل مپ ثبت کردید، با دکمه زیر {REWARD_POINTS} امتیاز هدیه بگیرید:"
+)
+
+REWARD_THANKS_MESSAGE = (
+    "از مهر ماندگار شما صمیمانه سپاسگزاریم و امیدواریم بتونیم مجددا توفیق میزبانی شمارو داشته باشیم🙏😇🌸"
+)
+
+# اگر ارسال/کپی پیام گیف ممکن نبود، این متن همراه دکمه لینک گوگل مپ فرستاده می‌شود
+REVIEW_GIF_FALLBACK_MESSAGE = (
+    "📍 لطفا نظر خود را درباره کم و کِیف عملکرد رستوران از طریق دکمه زیر در گوگل مپ ثبت کنید👇"
+)
+
+# متن دکمه‌های ثبت/حذف گیف نظرسنجی هر شعبه
+REVIEW_GIF_SET_TEXTS = {
+    BTN_GIF_MASHHAD.text: "mashhad",
+    BTN_GIF_TEHRAN.text: "tehran",
+}
+REVIEW_GIF_DELETE_TEXTS = {
+    BTN_GIF_DELETE_MASHHAD.text: "mashhad",
+    BTN_GIF_DELETE_TEHRAN.text: "tehran",
+}
+
+
+def google_map_link(branch):
+    """لینک نظر دهی در گوگل مپ برای هر شعبه"""
+    return GOOGLE_MAP_TEHRAN if branch == "tehran" else GOOGLE_MAP_MASHHAD
+
+
+def google_review_kb(branch):
+    """دکمهای کردن لینک نظر دهی در گوگل مپ"""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "📍 لینک نظر دهی در گوگل مپ", url=google_map_link(branch)
+                )
+            ]
+        ]
+    )
+
+
+def reward_kb(branch="mashhad"):
+    """دکمه دریافت امتیاز هدیه (شعبه در callback_data نگه داشته می‌شود)"""
+    branch = "tehran" if str(branch).lower() == "tehran" else "mashhad"
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    f"🎁 دریافت {REWARD_POINTS} امتیاز",
+                    callback_data=f"claim_reward|{branch}",
+                )
+            ]
+        ]
+    )
+
+
+def review_gif_message_id(branch):
+    """شماره پیام گیف نظرسنجی در گروه لیست انتظار شعبه"""
+    try:
+        if branch == "tehran":
+            return int(REVIEW_GIF_MESSAGE_ID_TEHRAN)
+        return int(REVIEW_GIF_MESSAGE_ID_MASHHAD)
+    except (TypeError, ValueError):
+        return None
+
+
+def review_gif_kb():
+    """دکمه‌های بخش ثبت گیف نظرسنجی در پنل مدیریت"""
+    return ReplyKeyboardMarkup(
+        [
+            [BTN_GIF_MASHHAD, BTN_GIF_TEHRAN],
+            [BTN_GIF_DELETE_MASHHAD, BTN_GIF_DELETE_TEHRAN],
+            [BTN_ADMIN_BACK],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def low_rating_kb():
+    """دکمه‌های امتیاز ۱ تا ۴ ستاره برای مشتری ناراضی"""
+    return ReplyKeyboardMarkup(
+        [[BTN_STAR_4, BTN_STAR_3, BTN_STAR_2, BTN_STAR_1], [BTN_BACK]],
+        resize_keyboard=True,
+    )
+
+
+def reward_received_text(branch, claims_count=None):
+    """متن پیام «دریافت امتیاز» برای مشتری"""
+    now = jdatetime.datetime.now().strftime("%Y/%m/%d - %H:%M")
+    text = (
+        f"🎁 {REWARD_POINTS} امتیاز شما دریافت شد\n\n"
+        f"از اینکه با ثبت نظر ۵ ستاره در گوگل مپ به رشد ما کمک کردید سپاسگزاریم✅\n"
+        f"📍 شعبه: {branch_display_name(branch)}\n"
+        f" زمان ثبت: {now}"
+    )
+    if claims_count and claims_count > 1:
+        text += f"\n\n🔹 این {claims_count}اُمین اعلام دریافت امتیاز شما در این شعبه است."
+    return text
+
+
+async def send_photo_delivered_message(context, user_id):
+    """ارسال پیام تحویل عکس یادگاری به مشتری (قبل از شروع نظرسنجی)"""
+    try:
+        await context.bot.send_message(chat_id=user_id, text=PHOTO_DELIVERED_MESSAGE)
+        return True
+    except Exception as e:
+        print(f"❌ خطا در ارسال پیام تحویل عکس: {e}")
+        return False
+
+
+async def send_review_gif_file(context, chat_id, gif, reply_markup=None):
+    """ارسال فایل گیف نظرسنجی ثبت‌شده (انیمیشن/ویدیو/فایل) همراه دکمه لینک گوگل مپ"""
+    file_id = (gif or {}).get("file_id")
+    if not file_id:
+        raise ValueError("file_id گیف نظرسنجی مشخص نیست")
+
+    caption = (gif or {}).get("caption") or None
+    file_type = str((gif or {}).get("file_type") or "animation").strip().lower()
+
+    send_order = {
+        "animation": ("animation", "video", "document"),
+        "video": ("video", "animation", "document"),
+        "document": ("document", "animation", "video"),
+    }.get(file_type, ("animation", "video", "document"))
+
+    last_error = None
+    for kind in send_order:
+        try:
+            if kind == "animation":
+                await context.bot.send_animation(
+                    chat_id=chat_id,
+                    animation=file_id,
+                    caption=caption,
+                    reply_markup=reply_markup,
+                )
+            elif kind == "video":
+                await context.bot.send_video(
+                    chat_id=chat_id,
+                    video=file_id,
+                    caption=caption,
+                    reply_markup=reply_markup,
+                )
+            else:
+                await context.bot.send_document(
+                    chat_id=chat_id,
+                    document=file_id,
+                    caption=caption,
+                    reply_markup=reply_markup,
+                )
+            return True
+        except Exception as e:
+            last_error = e
+            print(f"❌ ارسال گیف نظرسنجی به شکل {kind} ناموفق بود: {e}")
+
+    raise last_error
+
+
+async def send_review_gif(context, chat_id, branch):
+    """ارسال پیام گیف نظرسنجی همراه دکمه لینک گوگل مپ
+
+    ۱) گیفی که مدیر در پنل مدیریت ثبت کرده باشد
+    ۲) کپی پیام گیف موجود در گروه لیست انتظار همان شعبه
+    ۳) پیام متنی جایگزین (اگر هیچ‌کدام ممکن نبود)
+    """
+    reply_markup = google_review_kb(branch)
+
+    registered_gif = get_review_gif(branch)
+    if registered_gif:
+        try:
+            await send_review_gif_file(
+                context, chat_id, registered_gif, reply_markup=reply_markup
+            )
+            return True
+        except Exception as e:
+            print(f"❌ ارسال گیف ثبت‌شده شعبه {branch} ناموفق بود: {e}")
+
+    source_chat_id = waiting_group_chat_id(branch)
+    message_id = review_gif_message_id(branch)
+    if source_chat_id and message_id:
+        try:
+            await context.bot.copy_message(
+                chat_id=chat_id,
+                from_chat_id=source_chat_id,
+                message_id=message_id,
+                reply_markup=reply_markup,
+            )
+            return True
+        except Exception as e:
+            print(f"❌ کپی پیام گیف گروه لیست انتظار شعبه {branch} ناموفق بود: {e}")
+
+    await context.bot.send_message(
+        chat_id=chat_id, text=REVIEW_GIF_FALLBACK_MESSAGE, reply_markup=reply_markup
+    )
+    return False
+
+
+async def send_review_request_messages(context, chat_id, branch):
+    """پیام‌های بعد از اعلام رضایت ۵ ستاره: لینک گوگل مپ ← گیف ← هدیه ۱۰ امتیاز"""
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=GOOGLE_REVIEW_MESSAGE,
+        reply_markup=google_review_kb(branch),
+    )
+    await send_review_gif(context, chat_id, branch)
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=REWARD_INVITE_MESSAGE,
+        reply_markup=reward_kb(branch),
+    )
+
 
 def admin_panel_kb():
     keyboard = [
         [BTN_ADMIN_STATS],
         [BTN_ADMIN_USERS_LOG, BTN_ADMIN_USAGE_LOG],
+        [BTN_ADMIN_SEND_WAITING_LIST],
+        [BTN_ADMIN_REWARD_CLAIMS, BTN_ADMIN_REVIEW_GIF],
         [BTN_ADMIN_MASHHAD_PENDING, BTN_ADMIN_TEHRAN_PENDING],
         [BTN_ADMIN_MASHHAD_FAILED, BTN_ADMIN_TEHRAN_FAILED],
         [BTN_ADMIN_RESEND],
@@ -871,6 +1350,7 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
     stats = get_daily_stats()
+    reward_stats = get_review_rewards_stats()
     await update.message.reply_text(
         f"📊 آمار امروز\n\n"
         f"درخواست‌های ثبت‌شده: {stats['total_requests']}\n"
@@ -879,7 +1359,9 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"❌ ارسال ناموفق: {stats['failed_requests']}\n\n"
         f"میانگین امتیاز رضایت: {stats['avg_rating']:.1f} از 5\n"
         f"🌟 تعداد 5 ستاره: {stats['five_star']}\n"
-        f"تعداد نارضایتی (زیر 5): {stats['complaints']}",
+        f"تعداد نارضایتی (زیر 5): {stats['complaints']}\n\n"
+        f"🎁 دریافت {REWARD_POINTS} امتیاز امروز: {reward_stats['claims_today']}\n"
+        f"🎁 کل دریافت‌ها: {reward_stats['total_claims']}",
         parse_mode="Markdown",
     )
 
@@ -900,6 +1382,186 @@ async def admin_usage_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text, keyboard = build_usage_log_page(0)
     await update.message.reply_text(text, reply_markup=keyboard)
+
+
+async def admin_send_waiting_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ارسال دستی لیست کاربران در انتظار دریافت عکس به گروه‌های لیست انتظار"""
+    if not is_admin(update.effective_user.id):
+        return
+
+    results = []
+    for branch in ("mashhad", "tehran"):
+        try:
+            sent = await send_waiting_list_to_group(context.bot, branch)
+        except Exception as e:
+            print(f"❌ خطا در ارسال لیست انتظار شعبه {branch}: {e}")
+            sent = False
+
+        if sent:
+            results.append(f"✅ {branch_display_name(branch)}: لیست ارسال شد")
+        else:
+            results.append(f"ℹ️ {branch_display_name(branch)}: کسی در انتظار نیست")
+
+    await update.message.reply_text(
+        "📤 لیست کاربران در انتظار دریافت عکس\n\n" + "\n".join(results),
+        reply_markup=admin_panel_kb(),
+    )
+
+
+async def admin_reward_claims(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """لیست مشتریانی که دکمه دریافت ۱۰ امتیاز را زده‌اند (برای بررسی نظر ۵ ستاره)"""
+    if not is_admin(update.effective_user.id):
+        return
+
+    stats = get_review_rewards_stats()
+    total = get_review_rewards_count()
+    claims = get_review_rewards(limit=REWARD_CLAIMS_PAGE_SIZE)
+
+    lines = [
+        f"🎁 اعلام‌های دریافت {REWARD_POINTS} امتیاز",
+        "",
+        f"📊 کل اعلام‌ها: {stats['total_claims']}",
+        f"🆕 اعلام امروز: {stats['claims_today']}",
+        f"👥 کاربران یکتا: {stats['unique_users']}",
+        "──────────────────",
+    ]
+
+    if not claims:
+        lines.append("هنوز کسی دکمه دریافت امتیاز را نزده است.")
+    else:
+        for index, claim in enumerate(claims, start=1):
+            lines.append(
+                f"{index}) 👤 {format_user_display(claim['user_id'], claim.get('first_name'), claim.get('username'))}"
+            )
+            lines.append(
+                f"   📱 شماره: {claim.get('phone') or 'ثبت نشده'}"
+                f" | 📍 {branch_display_name(claim.get('branch'))}"
+            )
+            lines.append(
+                f"   🕐 زمان اعلام: {format_persian_datetime(claim.get('claimed_at'))}"
+            )
+            lines.append("")
+
+        if total > len(claims):
+            lines.append(f"… و {total - len(claims)} اعلام قدیمی‌تر.")
+        lines.append(
+            "🔹 این افراد اعلام کرده‌اند نظر ۵ ستاره خود را در گوگل مپ ثبت کرده‌اند؛ "
+            "لطفا ثبت واقعی نظرشان بررسی شود."
+        )
+
+    await update.message.reply_text("\n".join(lines), reply_markup=admin_panel_kb())
+
+
+async def admin_review_gif(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """بخش ثبت گیف نظرسنجی (گیفی که بعد از اعلام رضایت ۵ ستاره ارسال می‌شود)"""
+    if not is_admin(update.effective_user.id):
+        return
+
+    context.user_data.pop("admin_action", None)
+    context.user_data.pop("review_gif_branch", None)
+
+    lines = ["🎬 گیف نظرسنجی شعبه‌ها", ""]
+    for branch in ("mashhad", "tehran"):
+        gif = get_review_gif(branch)
+        source = (
+            "گیف ثبت‌شده در پنل مدیریت"
+            if gif
+            else f"پیام گروه لیست انتظار (شماره {review_gif_message_id(branch)})"
+        )
+        lines.append(f"📍 {branch_display_name(branch)}: {source}")
+
+    lines.extend(
+        [
+            "",
+            "برای تغییر گیف، اول دکمه شعبه را بزنید و بعد گیف/ویدیو را همین‌جا "
+            "(میتوانید پیام گروه را فوروارد کنید) ارسال کنید.",
+            "اگر کپشنی هم بنویسید، همراه گیف برای مشتری ارسال می‌شود.",
+        ]
+    )
+
+    await update.message.reply_text("\n".join(lines), reply_markup=review_gif_kb())
+
+
+async def handle_review_gif_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """انتخاب شعبه برای ثبت یا حذف گیف نظرسنجی"""
+    if not is_admin(update.effective_user.id):
+        return
+
+    text = update.message.text
+
+    if text in REVIEW_GIF_SET_TEXTS:
+        branch = REVIEW_GIF_SET_TEXTS[text]
+        context.user_data["admin_action"] = "review_gif"
+        context.user_data["review_gif_branch"] = branch
+        await update.message.reply_text(
+            f"🎬 ثبت گیف نظرسنجی {branch_display_name(branch)}\n\n"
+            "لطفا گیف یا ویدیوی مورد نظر را همین‌جا ارسال کنید.\n"
+            "🔹 اگر کپشن بنویسید، همراه گیف برای مشتری ارسال می‌شود.\n\n"
+            "برای انصراف دکمه «بازگشت به منو» را بزنید.",
+            reply_markup=ReplyKeyboardMarkup([[BTN_ADMIN_BACK]], resize_keyboard=True),
+        )
+        return
+
+    if text in REVIEW_GIF_DELETE_TEXTS:
+        branch = REVIEW_GIF_DELETE_TEXTS[text]
+        removed = clear_review_gif(branch)
+        context.user_data.pop("admin_action", None)
+        context.user_data.pop("review_gif_branch", None)
+
+        if removed:
+            message = (
+                f"✅ گیف ثبت‌شده {branch_display_name(branch)} حذف شد.\n\n"
+                "از این پس پیام گیف گروه لیست انتظار همین شعبه برای مشتری کپی می‌شود."
+            )
+        else:
+            message = (
+                f"ℹ️ برای {branch_display_name(branch)} گیفی در پنل ثبت نشده بود؛ "
+                "پیام گیف گروه لیست انتظار استفاده می‌شود."
+            )
+
+        await update.message.reply_text(message, reply_markup=review_gif_kb())
+        return
+
+
+async def handle_review_gif_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ثبت گیف نظرسنجی توسط ادمین (انیمیشن/ویدیو/فایل) در چت خصوصی"""
+    if context.user_data.get("admin_action") != "review_gif":
+        return
+
+    if not is_admin(update.effective_user.id):
+        return
+
+    message = update.message
+    branch = context.user_data.get("review_gif_branch", "mashhad")
+
+    file_id = None
+    file_type = None
+    if getattr(message, "animation", None):
+        file_id, file_type = message.animation.file_id, "animation"
+    elif getattr(message, "video", None):
+        file_id, file_type = message.video.file_id, "video"
+    elif getattr(message, "document", None):
+        file_id, file_type = message.document.file_id, "document"
+
+    if not file_id:
+        await message.reply_text(
+            "❌ لطفا یک گیف، ویدیو یا فایل ویدیویی ارسال کنید.",
+            reply_markup=ReplyKeyboardMarkup([[BTN_ADMIN_BACK]], resize_keyboard=True),
+        )
+        return
+
+    caption = (getattr(message, "caption", None) or "").strip() or None
+
+    if save_review_gif(branch, file_id, file_type, caption):
+        await message.reply_text(
+            f"✅ گیف نظرسنجی {branch_display_name(branch)} ثبت شد.\n\n"
+            "از این پس این گیف همراه دکمه لینک گوگل مپ برای مشتریان ارسال می‌شود.",
+            reply_markup=review_gif_kb(),
+        )
+        context.user_data.pop("admin_action", None)
+        context.user_data.pop("review_gif_branch", None)
+    else:
+        await message.reply_text("❌ خطا در ثبت گیف. لطفا دوباره تلاش کنید.")
 
 
 def _parse_log_callback_offset(callback_data):
@@ -1148,153 +1810,279 @@ async def back_to_menu_callback(update: Update, context: ContextTypes.DEFAULT_TY
     )
 
 
+async def claim_reward_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """دکمه «دریافت ۱۰ امتیاز» بعد از ثبت نظر ۵ ستاره در گوگل مپ"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    branch = "tehran" if "tehran" in (query.data or "") else "mashhad"
+
+    await query.answer(f"🎁 {REWARD_POINTS} امتیاز شما ثبت شد")
+
+    phone = None
+    try:
+        phone = get_last_request_phone(user_id)
+    except Exception as e:
+        print(f"❌ خطا در خواندن شماره آخرین درخواست کاربر: {e}")
+
+    result = save_review_reward(user_id=user_id, phone=phone, branch=branch)
+    claims_count = result.get("claims_count") if result else None
+
+    log_user_activity(
+        query.from_user,
+        f"دریافت {REWARD_POINTS} امتیاز هدیه",
+        detail=(
+            f"شعبه {branch_display_name(branch)}"
+            + (f" | تلفن: {phone}" if phone else "")
+        ),
+    )
+
+    # دکمه بعد از یک‌بار استفاده حذف می‌شود تا امتیاز تکراری ثبت نشود
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception as e:
+        print(f"ℹ️ حذف دکمه دریافت امتیاز ممکن نشد: {e}")
+
+    # ۱) پیام دریافت امتیاز ۲) پیام سپاسگزاری
+    await context.bot.send_message(
+        chat_id=user_id, text=reward_received_text(branch, claims_count)
+    )
+    await context.bot.send_message(chat_id=user_id, text=REWARD_THANKS_MESSAGE)
+
+
+def user_state(context, user_id):
+    """دسترسی به وضعیت (user_data) یک کاربر مشخص
+
+    اگر ادمین از سمت خودش نظرسنجی مشتری را شروع کند، وضعیت باید برای خودِ مشتری
+    تنظیم شود؛ پس از application.user_data استفاده میکنیم.
+    """
+    application = getattr(context, "application", None)
+    user_data_map = getattr(application, "user_data", None)
+    if user_data_map is not None:
+        try:
+            return user_data_map[user_id]
+        except Exception:
+            pass
+    return getattr(context, "user_data", {})
+
+
+def set_survey_step(context, user_id, step=None, **extra):
+    """ثبت مرحله نظرسنجی برای یک کاربر"""
+    state = user_state(context, user_id)
+    if not isinstance(state, dict):
+        return
+
+    state["survey_step"] = step
+    for key, value in extra.items():
+        state[key] = value
+
+
+def survey_branch_for(context, user_id, fallback="mashhad"):
+    """شعبه‌ای که نظرسنجی این کاربر برای آن انجام می‌شود"""
+    state = user_state(context, user_id)
+    branch = state.get("survey_branch") if isinstance(state, dict) else None
+    if not branch:
+        branch = context.user_data.get("branch")
+    branch = branch or fallback
+    return "tehran" if str(branch).lower() == "tehran" else "mashhad"
+
+
 async def start_survey(context: ContextTypes.DEFAULT_TYPE, user_id: int, branch: str):
-    keyboard = ReplyKeyboardMarkup(
-        [[KeyboardButton("بله، راضی بودم")], [KeyboardButton("نه، راضی نبودم")]],
-        resize_keyboard=True,
+    """شروع نظرسنجی رضایت: پرسش امتیاز ۵ ستاره"""
+    branch = "tehran" if str(branch).lower() == "tehran" else "mashhad"
+
+    set_survey_step(
+        context,
+        user_id,
+        "five_star",
+        survey_branch=branch,
+        survey_rating=None,
+        survey_id=None,
     )
     await context.bot.send_message(
         chat_id=user_id,
-        text="📊 نظرسنجی رضایت\n\nاز تجربه‌ای که در رستوران پسران کریم داشتید، راضی بودید؟",
-        reply_markup=keyboard,
+        text=SURVEY_FIVE_STAR_QUESTION,
+        reply_markup=ReplyKeyboardMarkup(
+            [[BTN_SURVEY_YES], [BTN_SURVEY_NO]], resize_keyboard=True
+        ),
         parse_mode="Markdown",
     )
 
 
+def survey_step_is_answer(step, text):
+    """آیا متن ورودی، پاسخ مرحله فعلی نظرسنجی است؟"""
+    if step == "five_star":
+        return text in SURVEY_YES_TEXTS or text in SURVEY_NO_TEXTS
+    if step == "rating_low":
+        return text.count("⭐") > 0 or text == BTN_BACK_TEXT
+    if step == "low_rating_reason":
+        # در این مرحله هر پیامی (شامل «بازگشت») توسط هندلر نظرسنجی بررسی می‌شود
+        return True
+    return False
+
+
 async def handle_star_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """انتخاب امتیاز ۱ تا ۴ ستاره توسط مشتری ناراضی"""
     text = update.message.text
     user_id = update.effective_user.id
-    branch = context.user_data.get("branch", "mashhad")
+    branch = survey_branch_for(context, user_id)
 
-    star_count = text.count("⭐")
-    if star_count == 0:
-        return
-
-    rating = star_count
-    save_survey(user_id, rating, None, branch)
-
-    log_user_activity(
-        update.effective_user,
-        "ثبت نظرسنجی رضایت",
-        detail=f"امتیاز {rating} از 5 | شعبه {'مشهد' if branch == 'mashhad' else 'تهران'}",
-    )
-
-    context.user_data["survey_step"] = None
-
-    if rating == 5:
-        if branch == "mashhad":
-            google_map_link = "https://goo.gl/maps/2uReg6JVGWT3kmXaA"
-            branch_name = "شعبه مشهد (خیام)"
-        else:
-            google_map_link = "https://goo.gl/1NYXYZM5rj7QLZeUA"
-            branch_name = "شعبه تهران (هتل پارسیان آزادی)"
-
-        keyboard = InlineKeyboardMarkup(
-            [
-                [InlineKeyboardButton("📍 گوگل مپ", url=google_map_link)],
-                [
-                    InlineKeyboardButton(
-                        "🔙 بازگشت به منو", callback_data="back_to_menu"
-                    )
-                ],
-            ]
-        )
-
-        await update.message.reply_text(
-            f"از اینکه از خدمات ما در {branch_name} راضی بودید بسیار خوشحالیم.\n\n"
-            f"🙏⭐لطفا با ثبت نظر خود در گوگل مپ به ما کمک کنید تا بهتر دیده شویم.",
-            reply_markup=keyboard,
-            parse_mode="Markdown",
-        )
-    else:
-        context.user_data["survey_rating"] = rating
-        context.user_data["survey_step"] = "low_rating_reason"
-        await update.message.reply_text(
-            f"⭐ امتیاز شما: {rating} از 5\n\n"
-            "متاسفیم که تجربه شما کامل نبوده.\n"
-            "لطفا علت آن را برای ما توضیح دهید:",
-            reply_markup=ReplyKeyboardMarkup([[BTN_BACK]], resize_keyboard=True),
-            parse_mode="Markdown",
-        )
-
-
-async def survey_response_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text = update.message.text
-    branch = context.user_data.get("branch", "mashhad")
-
-    if text == "بله، راضی بودم":
-        context.user_data["survey_step"] = "rating"
-        keyboard = ReplyKeyboardMarkup(
-            [[BTN_STAR_1, BTN_STAR_2, BTN_STAR_3, BTN_STAR_4, BTN_STAR_5], [BTN_BACK]],
-            resize_keyboard=True,
-        )
-        await update.message.reply_text(
-            "🌟 امتیاز شما به رستوران پسران کریم\n\nلطفا از 1 تا 5 ستاره به ما امتیاز دهید:",
-            reply_markup=keyboard,
-            parse_mode="Markdown",
-        )
-        return
-
-    elif text == "نه، راضی نبودم":
-        context.user_data["survey_step"] = "complaint"
-        await update.message.reply_text(
-            "متاسفیم که تجربه خوبی نداشتید.\n\n"
-            "لطفا مشکل خود را به طور کامل برای ما بنویسید تا بتوانیم آن را برطرف کنیم:",
-            reply_markup=ReplyKeyboardMarkup([[BTN_BACK]], resize_keyboard=True),
-        )
-        return
-
-    elif context.user_data.get("survey_step") in ["complaint", "low_rating_reason"]:
-        if text != BTN_BACK_TEXT:
-            rating = context.user_data.get("survey_rating", 0)
-            save_survey(user_id, rating, text, branch)
-
-            log_user_activity(
-                update.effective_user,
-                "ثبت نظر/نارضایتی",
-                detail=f"امتیاز {rating if rating > 0 else 'بدون امتیاز'} | شعبه {'مشهد' if branch == 'mashhad' else 'تهران'}",
-            )
-
-            complaint_group = (
-                GROUP_MASHHAD_COMPLAINT
-                if branch == "mashhad"
-                else GROUP_TEHRAN_COMPLAINT
-            )
-
-            try:
-                await context.bot.send_message(
-                    chat_id=complaint_group,
-                    text=f"📝 نارضایتی جدید\n\n"
-                    f"👤 کاربر: {update.effective_user.first_name}\n"
-                    f"🆔 آیدی: {user_id}\n"
-                    f"📍 شعبه: {'مشهد' if branch == 'mashhad' else 'تهران'}\n"
-                    f"⭐ امتیاز: {rating if rating > 0 else 'بدون امتیاز'}\n"
-                    f"📝 پیام:\n{text}",
-                )
-            except Exception as e:
-                print(f"❌ خطا در ارسال به گروه نارضایتی: {e}")
-
-            await update.message.reply_text(
-                "🙏 با تشکر از شما\n\n"
-                "پیام شما ثبت شد و برای بهبود کیفیت خدمات ما بسیار ارزشمند است.",
-                reply_markup=branch_menu_kb(branch, user_id),
-                parse_mode="Markdown",
-            )
-            context.user_data["survey_step"] = None
-        else:
-            await update.message.reply_text(
-                "🔙 به منوی اصلی بازگشتید.",
-                reply_markup=branch_menu_kb(branch, user_id),
-            )
-        return
-
-    elif text == "🔙 بازگشت به منو":
+    if text == BTN_BACK_TEXT:
+        set_survey_step(context, user_id, None)
         await update.message.reply_text(
             "🔙 به منوی اصلی بازگشتید.",
             reply_markup=branch_menu_kb(branch, user_id),
         )
         return
+
+    rating = text.count("⭐")
+    if rating == 0:
+        return
+
+    if rating > 4:
+        # امتیاز ۵ ستاره فقط از مسیر پرسش اول پذیرفته می‌شود
+        await update.message.reply_text(
+            LOW_RATING_REQUEST_MESSAGE,
+            reply_markup=low_rating_kb(),
+            parse_mode="Markdown",
+        )
+        return
+
+    survey_id = save_survey(user_id, rating, None, branch)
+
+    log_user_activity(
+        update.effective_user,
+        "ثبت امتیاز زیر ۵ ستاره",
+        detail=f"امتیاز {rating} از ۵ | شعبه {branch_display_name(branch)}",
+    )
+
+    set_survey_step(
+        context,
+        user_id,
+        "low_rating_reason",
+        survey_branch=branch,
+        survey_rating=rating,
+        survey_id=survey_id,
+    )
+
+    await update.message.reply_text(
+        f"⭐ امتیاز شما: {rating} از ۵\n\n{LOW_RATING_REASON_REQUEST_MESSAGE}",
+        reply_markup=ReplyKeyboardMarkup([[BTN_BACK]], resize_keyboard=True),
+        parse_mode="Markdown",
+    )
+
+
+async def survey_response_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """پاسخ‌های مشتری به نظرسنجی رضایت (پرسش ۵ ستاره، امتیاز زیر ۵ و دلیل نارضایتی)"""
+    user_id = update.effective_user.id
+    text = update.message.text
+    state = user_state(context, user_id)
+    step = state.get("survey_step") if isinstance(state, dict) else None
+    branch = survey_branch_for(context, user_id)
+
+    # ===== پاسخ «بله»: اعلام رضایت ۵ ستاره =====
+    if step == "five_star" and text in SURVEY_YES_TEXTS:
+        save_survey(user_id, 5, None, branch)
+
+        log_user_activity(
+            update.effective_user,
+            "اعلام رضایت ۵ ستاره",
+            detail=f"شعبه {branch_display_name(branch)}",
+        )
+
+        set_survey_step(context, user_id, None, survey_branch=branch)
+
+        # لینک گوگل مپ ← پیام گیف گروه شعبه ← دعوت به دریافت ۱۰ امتیاز
+        await send_review_request_messages(context, user_id, branch)
+        return
+
+    # ===== پاسخ «خیر»: دریافت امتیاز ۱ تا ۴ ستاره =====
+    if text in SURVEY_NO_TEXTS:
+        log_user_activity(
+            update.effective_user,
+            "اعلام نارضایتی",
+            detail=f"شعبه {branch_display_name(branch)}",
+        )
+
+        set_survey_step(
+            context,
+            user_id,
+            "rating_low",
+            survey_branch=branch,
+            survey_rating=None,
+            survey_id=None,
+        )
+
+        await update.message.reply_text(
+            LOW_RATING_REQUEST_MESSAGE,
+            reply_markup=low_rating_kb(),
+            parse_mode="Markdown",
+        )
+        return
+
+    # ===== مرحله ثبت دلیل نارضایتی =====
+    if step == "low_rating_reason":
+        if text == BTN_BACK_TEXT:
+            set_survey_step(context, user_id, None)
+            await update.message.reply_text(
+                "🔙 به منوی اصلی بازگشتید.",
+                reply_markup=branch_menu_kb(branch, user_id),
+            )
+            return
+
+        await finish_low_rating_survey(update, context, branch, text)
+        return
+
+
+async def finish_low_rating_survey(update, context, branch, reason):
+    """ثبت دلیل نارضایتی روی همان نظرسنجی و ارسال آن به گروه نارضایتی شعبه"""
+    user_id = update.effective_user.id
+    state = user_state(context, user_id)
+    state = state if isinstance(state, dict) else {}
+
+    rating = state.get("survey_rating") or 0
+    survey_id = state.get("survey_id")
+
+    if survey_id:
+        update_survey_comment(survey_id, reason)
+    else:
+        survey_id = save_survey(user_id, rating, reason, branch)
+
+    log_user_activity(
+        update.effective_user,
+        "ثبت دلیل نارضایتی",
+        detail=(
+            f"امتیاز {rating if rating else 'بدون امتیاز'} | "
+            f"شعبه {branch_display_name(branch)}"
+        ),
+    )
+
+    complaint_group = (
+        GROUP_MASHHAD_COMPLAINT if branch == "mashhad" else GROUP_TEHRAN_COMPLAINT
+    )
+
+    try:
+        await context.bot.send_message(
+            chat_id=complaint_group,
+            text=(
+                "📝 نارضایتی جدید\n\n"
+                f"👤 کاربر: {getattr(update.effective_user, 'first_name', None) or 'کاربر بدون نام'}\n"
+                f"🆔 آیدی: {user_id}\n"
+                f"📍 شعبه: {branch_display_name(branch)}\n"
+                f"⭐ امتیاز: {rating if rating else 'بدون امتیاز'}\n"
+                f"📝 پیام:\n{reason}"
+            ),
+        )
+    except Exception as e:
+        print(f"❌ خطا در ارسال به گروه نارضایتی: {e}")
+
+    set_survey_step(context, user_id, None)
+
+    await update.message.reply_text(
+        "🙏 با تشکر از شما\n\n"
+        "پیام شما ثبت شد و برای بهبود کیفیت خدمات ما بسیار ارزشمند است.",
+        reply_markup=branch_menu_kb(branch, user_id),
+        parse_mode="Markdown",
+    )
 
 
 def save_survey(user_id, rating, comment, branch):
@@ -1414,15 +2202,28 @@ async def handle_admin_response(update: Update, context: ContextTypes.DEFAULT_TY
     elif text == "نه، تمام شد":
         context.user_data.pop("admin_upload", None)
 
-        await update.message.reply_text(
+        finished_text = (
             f"✅ همه عکس‌ها ارسال شدند.\n\n"
             f"📱 شماره: {phone}\n"
             f"🏷️ کد: {photo_code}\n"
-            f"📸 تعداد عکس‌های ارسال‌شده: {count}",
-            reply_markup=admin_panel_kb(),
-            parse_mode="Markdown",
+            f"📸 تعداد عکس‌های ارسال‌شده: {count}"
         )
 
+        # در گروه‌های کاری، پنل مدیریت فرستاده نمی‌شود تا مزاحم اعضا نشویم
+        chat_type = getattr(
+            getattr(update, "effective_chat", None), "type", "private"
+        )
+        if chat_type and chat_type != "private":
+            await update.message.reply_text(finished_text, parse_mode="Markdown")
+        else:
+            await update.message.reply_text(
+                finished_text,
+                reply_markup=admin_panel_kb(),
+                parse_mode="Markdown",
+            )
+
+        # پیام تحویل عکس و سپس شروع نظرسنجی رضایت برای مشتری
+        await send_photo_delivered_message(context, customer_user_id)
         await start_survey(context, customer_user_id, branch)
         return
 
@@ -1453,6 +2254,9 @@ async def handle_admin_response(update: Update, context: ContextTypes.DEFAULT_TY
                     parse_mode="Markdown",
                 )
 
+            # این درخواست ارسال شد؛ از لیست انتظار گروه شعبه حذف می‌شود
+            mark_request_as_sent(phone, photo_code, branch)
+
             context.user_data["admin_upload"]["count"] = (
                 context.user_data["admin_upload"].get("count", 1) + 1
             )
@@ -1476,6 +2280,22 @@ async def handle_admin_response(update: Update, context: ContextTypes.DEFAULT_TY
 
         except Exception as e:
             await update.message.reply_text(f"❌ ارسال ناموفق! خطا: {e}")
+
+
+async def handle_photo_group_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """پاسخ ادمین به پرسش «عکس دیگری دارید؟» در گروه‌های عکس
+
+    بدون این هندلر، دکمه‌های «بله، عکس دیگری دارم» و «نه، تمام شد» در گروه کاری
+    بی‌اثر می‌ماندند و نظرسنجی مشتری شروع نمی‌شد.
+    """
+    text = update.message.text
+    if text not in (BTN_YES.text, BTN_NO.text):
+        return
+
+    if not context.user_data.get("admin_upload"):
+        return
+
+    await handle_admin_response(update, context)
 
 
 async def support_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1627,17 +2447,14 @@ async def handle_all_messages(update, context):
         )
         return
 
-    if (
-        text in ["⭐", "⭐⭐", "⭐⭐⭐", "⭐⭐⭐⭐", "⭐⭐⭐⭐⭐"]
-        and context.user_data.get("survey_step") == "rating"
-    ):
-        await handle_star_selection(update, context)
-        return
+    survey_state = user_state(context, user_id)
+    survey_step = survey_state.get("survey_step") if isinstance(survey_state, dict) else None
 
-    if text in ["بله، راضی بودم", "نه، راضی نبودم"] or context.user_data.get(
-        "survey_step"
-    ):
-        await survey_response_handler(update, context)
+    if survey_step_is_answer(survey_step, text):
+        if survey_step == "rating_low":
+            await handle_star_selection(update, context)
+        else:
+            await survey_response_handler(update, context)
         return
 
     if text == "🛠️ پنل مدیریت":
@@ -1654,6 +2471,30 @@ async def handle_all_messages(update, context):
 
     elif text == "🧾 لاگ استفاده از ربات":
         await admin_usage_log(update, context)
+        return
+
+    elif text == "📤 ارسال لیست انتظار":
+        await admin_send_waiting_list(update, context)
+        return
+
+    elif text == BTN_ADMIN_REWARD_CLAIMS.text:
+        await admin_reward_claims(update, context)
+        return
+
+    elif text == BTN_ADMIN_REVIEW_GIF.text:
+        await admin_review_gif(update, context)
+        return
+
+    elif text in REVIEW_GIF_SET_TEXTS or text in REVIEW_GIF_DELETE_TEXTS:
+        await handle_review_gif_choice(update, context)
+        return
+
+    elif context.user_data.get("admin_action") == "review_gif":
+        await update.message.reply_text(
+            "🎬 لطفا گیف یا ویدیوی مورد نظر را ارسال کنید.\n\n"
+            "برای انصراف دکمه «بازگشت به منو» را بزنید.",
+            reply_markup=ReplyKeyboardMarkup([[BTN_ADMIN_BACK]], resize_keyboard=True),
+        )
         return
 
     elif text == "⏳ در انتظار - مشهد":
@@ -1702,6 +2543,12 @@ async def handle_all_messages(update, context):
 
     elif text == "🔙 بازگشت به منو":
         context.user_data["in_admin_panel"] = False
+
+        # اگر ادمین وسط ثبت گیف نظرسنجی منصرف شد، حالت انتظار پاک می‌شود
+        if context.user_data.get("admin_action") == "review_gif":
+            context.user_data.pop("admin_action", None)
+            context.user_data.pop("review_gif_branch", None)
+
         branch = context.user_data.get("branch", "mashhad")
         await update.message.reply_text(
             "🔙 به منوی اصلی بازگشتید.",
@@ -1748,16 +2595,18 @@ async def handle_all_messages(update, context):
                         photo_code=photo_code,
                         photo_date=photo_date,
                         branch=photo_branch,
+                        status="sent",
                     )
-                    log_photo_request_activity(
-                        update.effective_user, phone, photo_code, photo_branch
+                    await handle_new_photo_request(
+                        context,
+                        update.effective_user,
+                        photo_branch,
+                        phone,
+                        photo_code,
+                        photo_date,
+                        photo_sent=True,
                     )
-                    await update.message.reply_text(
-                        "✅ عکس شما ارسال شد!\n\n"
-                        "از اینکه رستوران پسران کریم را انتخاب کردید سپاسگزاریم🌹",
-                        reply_markup=branch_menu_kb(photo_branch, user_id),
-                        parse_mode="Markdown",
-                    )
+                    await send_photo_delivered_message(context, user_id)
                     await start_survey(context, user_id, photo_branch)
                     context.user_data["photo_step"] = None
                     return
@@ -1771,8 +2620,13 @@ async def handle_all_messages(update, context):
                 photo_date=photo_date,
                 branch=photo_branch,
             )
-            log_photo_request_activity(
-                update.effective_user, phone, photo_code, photo_branch
+            await handle_new_photo_request(
+                context,
+                update.effective_user,
+                photo_branch,
+                phone,
+                photo_code,
+                photo_date,
             )
             await update.message.reply_text(
                 "درخواست شما ثبت شد✅\n\n"
@@ -2325,20 +3179,20 @@ async def handle_all_messages(update, context):
                         photo_code=photo_code,
                         photo_date=photo_date,
                         branch=photo_branch,
+                        status="sent",
                     )
 
-                    log_photo_request_activity(
-                        update.effective_user, phone, photo_code, photo_branch
+                    await handle_new_photo_request(
+                        context,
+                        update.effective_user,
+                        photo_branch,
+                        phone,
+                        photo_code,
+                        photo_date,
+                        photo_sent=True,
                     )
 
-                    await update.message.reply_text(
-                        "فایل اصلی عکستون با کیفیت بالا تقدیم محضر باسعادتتون🙏😇🌹\n\n"
-                        "چنانچه تمایل دارید عکسهای زیبایتان در صفحه ما استوری شود قبول زحمت بفرمایید با یک پیج غیر پرایوت، آن را استوری کرده و مارا تگ نمایید تا بتوانیم اد استوری کرده و انجام وظیفه کنیم😍🙏🌹\n\n"
-                        "از عکس و کیفیت غذا و برخورد پرسنل و... رضایت کامل داشتید انشاالله؟😇",
-                        reply_markup=branch_menu_kb(photo_branch, user_id),
-                        parse_mode="Markdown",
-                    )
-
+                    await send_photo_delivered_message(context, user_id)
                     await start_survey(context, user_id, photo_branch)
                     context.user_data["photo_step"] = None
                     return
@@ -2354,8 +3208,13 @@ async def handle_all_messages(update, context):
                 branch=photo_branch,
             )
 
-            log_photo_request_activity(
-                update.effective_user, phone, photo_code, photo_branch
+            await handle_new_photo_request(
+                context,
+                update.effective_user,
+                photo_branch,
+                phone,
+                photo_code,
+                photo_date,
             )
 
             await update.message.reply_text(
@@ -2484,6 +3343,9 @@ async def handle_group_photo(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     "از اینکه رستوران پسران کریم را انتخاب کردید سپاسگذاریم🌹",
                     parse_mode="Markdown",
                 )
+
+            # این درخواست ارسال شد؛ از لیست انتظار گروه شعبه حذف می‌شود
+            mark_request_as_sent(phone, photo_code, branch)
 
             context.user_data["admin_upload"]["count"] = (
                 context.user_data["admin_upload"].get("count", 1) + 1
@@ -2651,7 +3513,7 @@ async def handle_group_photo(update: Update, context: ContextTypes.DEFAULT_TYPE)
 def main():
     init_db()
     init_admin_user()
-    app = Application.builder().token(TOKEN).build()
+    app = Application.builder().token(TOKEN).post_init(on_startup).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_command))
@@ -2660,6 +3522,21 @@ def main():
     app.add_handler(CallbackQueryHandler(back_to_menu_callback, pattern="back_to_menu"))
     app.add_handler(CallbackQueryHandler(users_log_callback, pattern="users_log"))
     app.add_handler(CallbackQueryHandler(usage_log_callback, pattern="usage_log"))
+    app.add_handler(CallbackQueryHandler(claim_reward_callback, pattern="claim_reward"))
+
+    # ثبت گیف نظرسنجی توسط ادمین (انیمیشن/ویدیو/فایل در چت خصوصی)
+    app.add_handler(
+        MessageHandler(
+            (
+                filters.ANIMATION
+                | filters.VIDEO
+                | filters.Document.ANIMATION
+                | filters.Document.VIDEO
+            )
+            & filters.ChatType.PRIVATE,
+            handle_review_gif_media,
+        )
+    )
 
     app.add_handler(
         MessageHandler(
@@ -2675,6 +3552,15 @@ def main():
             handle_group_photo,
         )
     )
+
+    # دکمه‌های «عکس دیگری دارم / تمام شد» در گروه‌های کاری عکس
+    for photo_group_chat_id in (GROUP_MASHHAD_PHOTO, GROUP_TEHRAN_PHOTO):
+        app.add_handler(
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND & filters.Chat(chat_id=photo_group_chat_id),
+                handle_photo_group_text,
+            )
+        )
 
     # پیام‌های متنی فقط در چت خصوصی پردازش می‌شوند تا گروه‌ها پیام اضافه (مثل
     # «شما از کانال خارج شدید») دریافت نکنند
