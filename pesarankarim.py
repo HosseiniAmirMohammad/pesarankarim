@@ -3525,14 +3525,13 @@ def main():
     app.add_handler(CallbackQueryHandler(claim_reward_callback, pattern="claim_reward"))
 
     # ثبت گیف نظرسنجی توسط ادمین (انیمیشن/ویدیو/فایل در چت خصوصی)
+    # نکته: filters.Document.ANIMATION در python-telegram-bot وجود ندارد؛
+    # گیف‌های معمولی با filters.ANIMATION و گیف‌هایی که به‌صورت فایل ارسال
+    # شوند با filters.Document.ALL پوشش داده می‌شوند (هندلر خودش نوع فایل
+    # را بررسی می‌کند و فایل غیر ویدیویی را با پیام خطا رد می‌کند).
     app.add_handler(
         MessageHandler(
-            (
-                filters.ANIMATION
-                | filters.VIDEO
-                | filters.Document.ANIMATION
-                | filters.Document.VIDEO
-            )
+            (filters.ANIMATION | filters.VIDEO | filters.Document.ALL)
             & filters.ChatType.PRIVATE,
             handle_review_gif_media,
         )
