@@ -461,9 +461,7 @@ async def real_member(context, user_id):
 
 async def send_preuploaded_file(context, chat_id, file_id, file_type=None):
     file_type = (file_type or "photo").lower()
-    caption = (
-        "📸 عکس یادگاری شما\n\nاز اینکه رستوران پسران کریم را انتخاب کردید سپاسگزاریم🌹"
-    )
+    caption = PHOTO_DELIVERED_MESSAGE
 
     if file_type == "document":
         try:
@@ -858,12 +856,12 @@ async def send_review_gif(context, chat_id, branch):
 
 
 async def send_review_request_messages(context, chat_id, branch):
-    """بعد از اعلام رضایت ۵ ستاره: فقط پیام گیف با دکمه «✅ نظر دادم» ارسال می‌شود
-
-    (پیام جداگانه لینک گوگل مپ و دکمه دریافت امتیاز حذف شد؛ کاربر بعد از ثبت
-    نظر، با زدن دکمه «نظر دادم» تبریک و ۱۰ امتیاز هدیه می‌گیرد و به منوی اصلی
-    برمی‌گردد.)
-    """
+    """بعد از اعلام رضایت ۵ ستاره: پیام تشکر و لینک گوگل مپ ← گیف با دکمه «✅ نظر دادم»"""
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=GOOGLE_REVIEW_MESSAGE,
+        reply_markup=google_review_kb(branch),
+    )
     await send_review_gif(context, chat_id, branch)
 
 
@@ -1807,12 +1805,15 @@ async def back_to_menu_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def claim_reward_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """دکمه «دریافت ۱۰ امتیاز» بعد از ثبت نظر ۵ ستاره در گوگل مپ"""
+    """دکمه «✅ نظر دادم» بعد از ثبت نظر ۵ ستاره در گوگل مپ"""
     query = update.callback_query
     user_id = query.from_user.id
     branch = "tehran" if "tehran" in (query.data or "") else "mashhad"
 
-    await query.answer(f"🎁 {REWARD_POINTS} امتیاز شما ثبت شد")
+    try:
+        await query.answer(f"🎁 {REWARD_POINTS} امتیاز شما ثبت شد")
+    except Exception as e:
+        print(f"ℹ️ answer دکمه نظر دادم ممکن نشد: {e}")
 
     phone = None
     try:
@@ -1836,7 +1837,7 @@ async def claim_reward_callback(update: Update, context: ContextTypes.DEFAULT_TY
     try:
         await query.edit_message_reply_markup(reply_markup=None)
     except Exception as e:
-        print(f"ℹ️ حذف دکمه دریافت امتیاز ممکن نشد: {e}")
+        print(f"ℹ️ حذف دکمه نظر دادم ممکن نشد: {e}")
 
     # ۱) پیام تبریک و دریافت امتیاز ۲) پیام سپاسگزاری ۳) بازگشت به منوی اصلی
     await context.bot.send_message(
@@ -2235,8 +2236,7 @@ async def handle_admin_response(update: Update, context: ContextTypes.DEFAULT_TY
                 parse_mode="Markdown",
             )
 
-        # پیام تحویل عکس و سپس شروع نظرسنجی رضایت برای مشتری
-        await send_photo_delivered_message(context, customer_user_id)
+        # پیام تحویل عکس حالا داخل کپشن خود عکس است؛ مستقیم نظرسنجی شروع می‌شود
         await start_survey(context, customer_user_id, branch)
         return
 
@@ -2256,14 +2256,14 @@ async def handle_admin_response(update: Update, context: ContextTypes.DEFAULT_TY
                 await context.bot.send_photo(
                     chat_id=customer_user_id,
                     photo=file_id,
-                    caption=f"📸 عکس یادگاری شما\n\n" f"📌 کد: {photo_code}",
+                    caption=PHOTO_DELIVERED_MESSAGE,
                     parse_mode="Markdown",
                 )
             else:
                 await context.bot.send_document(
                     chat_id=customer_user_id,
                     document=file_id,
-                    caption=f"📸 عکس یادگاری شما\n\n" f"📌 کد: {photo_code}",
+                    caption=PHOTO_DELIVERED_MESSAGE,
                     parse_mode="Markdown",
                 )
 
@@ -2619,7 +2619,6 @@ async def handle_all_messages(update, context):
                         photo_date,
                         photo_sent=True,
                     )
-                    await send_photo_delivered_message(context, user_id)
                     await start_survey(context, user_id, photo_branch)
                     context.user_data["photo_step"] = None
                     return
@@ -3205,7 +3204,6 @@ async def handle_all_messages(update, context):
                         photo_sent=True,
                     )
 
-                    await send_photo_delivered_message(context, user_id)
                     await start_survey(context, user_id, photo_branch)
                     context.user_data["photo_step"] = None
                     return
@@ -3429,8 +3427,7 @@ async def handle_group_photo(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await context.bot.send_photo(
                     chat_id=user_id,
                     photo=file_id,
-                    caption="📸 عکس یادگاری شما:\n\n"
-                    "از اینکه رستوران پسران کریم را انتخاب کردید سپاسگزاریم🌹",
+                    caption=PHOTO_DELIVERED_MESSAGE,
                     parse_mode="Markdown",
                 )
             elif update.message.document:
@@ -3438,8 +3435,7 @@ async def handle_group_photo(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await context.bot.send_document(
                     chat_id=user_id,
                     document=file_id,
-                    caption="📸 عکس یادگاری شما: \n\n"
-                    "از اینکه رستوران پسران کریم را انتخاب کردید سپاسگزاریم🌹",
+                    caption=PHOTO_DELIVERED_MESSAGE,
                     parse_mode="Markdown",
                 )
 

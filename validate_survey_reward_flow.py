@@ -289,9 +289,26 @@ check(
     [name for name, _ in customer_events].count("photo") == 1,
     str(customer_events),
 )
+
+
+def sent_captions(context, chat_id):
+    """کپشن فایل‌های ارسال‌شده برای یک چت"""
+    return [
+        kwargs.get("caption")
+        for name, kwargs in context.bot.call_log
+        if kwargs.get("chat_id") == chat_id
+        and name in ("send_photo", "send_document", "send_animation", "send_video")
+    ]
+
+
 check(
-    "پیام تحویل عکس (فایل اصلی عکستون...) برای مشتری ارسال شد",
-    ("message", bot.PHOTO_DELIVERED_MESSAGE) in customer_events,
+    "کپشن عکس تحویل، همان متن «فایل اصلی عکستون...» است",
+    bot.PHOTO_DELIVERED_MESSAGE in sent_captions(delivery_context, CUSTOMER_MASHHAD),
+    str(sent_captions(delivery_context, CUSTOMER_MASHHAD)),
+)
+check(
+    "پیام تحویل عکس دیگر به‌صورت پیام جداگانه ارسال نمی‌شود",
+    ("message", bot.PHOTO_DELIVERED_MESSAGE) not in customer_events,
 )
 check(
     "بعد از پیام تحویل عکس، پرسش ۵ ستاره ارسال شد",
@@ -299,8 +316,7 @@ check(
 )
 check(
     "ترتیب پیام‌ها درست است (تحویل عکس ← پرسش نظرسنجی)",
-    customer_events.index(("message", bot.PHOTO_DELIVERED_MESSAGE))
-    < customer_events.index(("message", bot.SURVEY_FIVE_STAR_QUESTION)),
+    customer_events.index(("message", bot.SURVEY_FIVE_STAR_QUESTION)) > 0,
 )
 check(
     "دکمه‌های بله/خیر همراه پرسش ارسال شد",
@@ -344,16 +360,16 @@ check(
     ("copy", bot.review_gif_message_id("mashhad")) in review_events,
 )
 check(
-    "پیام دعوت به دریافت ۱۰ امتیاز ارسال شد",
-    ("message", bot.REWARD_INVITE_MESSAGE) in review_events,
+    "بعد از گیف، منوی اصلی برای مشتری ارسال می‌شود",
+    ("message", "لطفا یکی از گزینه‌های زیر را انتخاب کنید:") in review_events,
 )
 check(
-    "ترتیب پیام‌ها: گوگل مپ ← گیف ← دریافت ۱۰ امتیاز",
+    "ترتیب پیام‌ها: تشکر و گوگل مپ ← گیف ← منوی اصلی",
     review_events
     == [
         ("message", bot.GOOGLE_REVIEW_MESSAGE),
         ("copy", bot.review_gif_message_id("mashhad")),
-        ("message", bot.REWARD_INVITE_MESSAGE),
+        ("message", "لطفا یکی از گزینه‌های زیر را انتخاب کنید:"),
     ],
     str(review_events),
 )
@@ -370,21 +386,22 @@ check(
     str(copy_call.get("from_chat_id")),
 )
 
-map_buttons = inline_buttons(copy_call.get("reply_markup"))
+map_buttons = inline_buttons(
+    reply_markup_of(delivery_context, CUSTOMER_MASHHAD, bot.GOOGLE_REVIEW_MESSAGE)
+)
 check(
-    "زیر پیام گیف، دکمه لینک گوگل مپ شعبه مشهد هست",
+    "زیر پیام تشکر، دکمه لینک گوگل مپ شعبه مشهد هست",
     len(map_buttons) == 1 and map_buttons[0].url == bot.GOOGLE_MAP_MASHHAD,
     str([getattr(b, "url", None) for b in map_buttons]),
 )
 
-reward_buttons = inline_buttons(
-    reply_markup_of(delivery_context, CUSTOMER_MASHHAD, bot.REWARD_INVITE_MESSAGE)
-)
+review_done_buttons = inline_buttons(copy_call.get("reply_markup"))
 check(
-    "دکمه «دریافت ۱۰ امتیاز» زیر پست هست",
-    len(reward_buttons) == 1
-    and reward_buttons[0].callback_data == "claim_reward|mashhad",
-    str([getattr(b, "callback_data", None) for b in reward_buttons]),
+    "دکمه «✅ نظر دادم» زیر گیف هست",
+    len(review_done_buttons) == 1
+    and review_done_buttons[0].text == "✅ نظر دادم"
+    and review_done_buttons[0].callback_data == "claim_reward|mashhad",
+    str([getattr(b, "callback_data", None) for b in review_done_buttons]),
 )
 check(
     "نظرسنجی ۵ ستاره برای مشتری ذخیره شد",
@@ -426,9 +443,10 @@ check(
 
 thanks_events = events_to(claim_context, CUSTOMER_MASHHAD)
 check(
-    "اول پیام دریافت ۱۰ امتیاز و بعد پیام سپاسگزاری ارسال شد",
-    len(thanks_events) == 2
-    and f"{bot.REWARD_POINTS} امتیاز شما دریافت شد" in thanks_events[0][1]
+    "اول پیام تبریک و دریافت امتیاز و بعد پیام سپاسگزاری و منوی اصلی ارسال شد",
+    len(thanks_events) == 3
+    and "تبریک" in (thanks_events[0][1] or "")
+    and f"{bot.REWARD_POINTS} امتیاز هدیه" in (thanks_events[0][1] or "")
     and thanks_events[1][1] == bot.REWARD_THANKS_MESSAGE,
     str(thanks_events),
 )
@@ -578,21 +596,23 @@ check(
     "کپشن ثبت‌شده همراه گیف ارسال شد",
     animation_call.get("caption") == "کپشن گیف تهران",
 )
-tehran_map_buttons = inline_buttons(animation_call.get("reply_markup"))
+tehran_review_buttons = inline_buttons(animation_call.get("reply_markup"))
 check(
-    "دکمه لینک گوگل مپ تهران زیر گیف ثبت شده است",
-    len(tehran_map_buttons) == 1 and tehran_map_buttons[0].url == bot.GOOGLE_MAP_TEHRAN,
-    str([getattr(b, "url", None) for b in tehran_map_buttons]),
+    "دکمه «✅ نظر دادم» زیر گیف ثبت‌شده تهران هست",
+    len(tehran_review_buttons) == 1
+    and tehran_review_buttons[0].text == "✅ نظر دادم"
+    and tehran_review_buttons[0].callback_data == "claim_reward|tehran",
+    str([getattr(b, "callback_data", None) for b in tehran_review_buttons]),
 )
 check(
-    "دکمه دریافت امتیاز شعبه تهران درست ساخته شد",
+    "زیر پیام تشکر تهران، دکمه لینک گوگل مپ تهران هست",
     [
-        button.callback_data
+        button.url
         for button in inline_buttons(
-            reply_markup_of(tehran_context, CUSTOMER_TEHRAN, bot.REWARD_INVITE_MESSAGE)
+            reply_markup_of(tehran_context, CUSTOMER_TEHRAN, bot.GOOGLE_REVIEW_MESSAGE)
         )
     ]
-    == ["claim_reward|tehran"],
+    == [bot.GOOGLE_MAP_TEHRAN],
 )
 
 # ---------------------------------------------------------------------------
@@ -736,8 +756,15 @@ group_update = make_update(
 asyncio.run(bot.handle_photo_group_text(group_update, group_context))
 
 check(
-    "پاسخ ادمین در گروه باعث ارسال پیام تحویل عکس برای مشتری شد",
-    bot.PHOTO_DELIVERED_MESSAGE in messages_to(group_context, CUSTOMER_GROUP),
+    "پیام تحویل عکس دیگر برای مشتری ارسال نمی‌شود (کپشن روی خود عکس است)",
+    bot.PHOTO_DELIVERED_MESSAGE not in messages_to(group_context, CUSTOMER_GROUP),
+)
+check(
+    "کپشن عکس‌های ارسالی همان متن تحویل عکس است",
+    not sent_captions(group_context, CUSTOMER_GROUP)
+    or all(
+        c == bot.PHOTO_DELIVERED_MESSAGE for c in sent_captions(group_context, CUSTOMER_GROUP)
+    ),
 )
 check(
     "نظرسنجی مشتری در گروه کاری هم شروع شد",

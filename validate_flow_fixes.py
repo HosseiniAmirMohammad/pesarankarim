@@ -108,6 +108,22 @@ def inline_callback_data(markup):
     return [button.callback_data for row in markup.inline_keyboard for button in row]
 
 
+def inline_button_objs(markup):
+    if markup is None or not hasattr(markup, "inline_keyboard"):
+        return []
+    return [button for row in markup.inline_keyboard for button in row]
+
+
+def sent_captions(context, chat_id):
+    """کپشن فایل‌های ارسال‌شده برای یک چت"""
+    return [
+        kwargs.get("caption")
+        for name, kwargs in context.bot.call_log
+        if kwargs.get("chat_id") == chat_id
+        and name in ("send_photo", "send_document", "send_animation", "send_video")
+    ]
+
+
 def messages_to(context, chat_id):
     return [
         kwargs.get("text")
@@ -189,8 +205,13 @@ check(
     ),
 )
 check(
-    "پیام تحویل عکس برای مشتری ارسال شد",
-    bot.PHOTO_DELIVERED_MESSAGE in messages_to(group_context, CUSTOMER),
+    "کپشن عکس‌های ارسالی (در صورت وجود) متن تحویل عکس است",
+    not sent_captions(group_context, CUSTOMER)
+    or all(c == bot.PHOTO_DELIVERED_MESSAGE for c in sent_captions(group_context, CUSTOMER)),
+)
+check(
+    "پیام تحویل عکس دیگر جداگانه ارسال نمی‌شود",
+    bot.PHOTO_DELIVERED_MESSAGE not in messages_to(group_context, CUSTOMER),
 )
 check(
     "نظرسنجی مشتری شروع شد (پرسش ۵ ستاره)",
@@ -251,8 +272,17 @@ check(
     inline_callback_data(gif_call.get("reply_markup")) == ["claim_reward|mashhad"],
 )
 check(
-    "پیام لینک گوگل مپ جداگانه دیگر ارسال نمی‌شود",
-    not any("ضمن عرض تشکر" in (t or "") for t in messages_to(survey_context, CUSTOMER)),
+    "بعد از بله، پیام تشکر و لینک گوگل مپ ارسال می‌شود",
+    any("ضمن عرض تشکر" in (t or "") for t in messages_to(survey_context, CUSTOMER)),
+)
+check(
+    "زیر پیام تشکر، دکمه لینک گوگل مپ هست",
+    any(
+        b.url == bot.GOOGLE_MAP_MASHHAD
+        for m in reply_markups_sent_to(survey_context, CUSTOMER)
+        if m is not None
+        for b in inline_button_objs(m)
+    ),
 )
 check(
     "پیام دعوت به دریافت امتیاز جداگانه دیگر ارسال نمی‌شود",
