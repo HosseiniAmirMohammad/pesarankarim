@@ -1792,12 +1792,8 @@ async def back_to_menu_callback(update: Update, context: ContextTypes.DEFAULT_TY
 async def claim_reward_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """دکمه «✅ نظر دادم» بعد از ثبت نظر ۵ ستاره در گوگل مپ"""
     query = update.callback_query
-    if query is None:
-        return
-
     user_id = query.from_user.id
-    raw_data = str(query.data or "")
-    branch = "tehran" if "tehran" in raw_data else "mashhad"
+    branch = "tehran" if "tehran" in (query.data or "") else "mashhad"
 
     # ۱) اعلان فوری به کاربر: «تبریک، شما ۱۰ امتیاز گرفتید!»
     try:
@@ -3529,12 +3525,7 @@ def main():
     app.add_handler(CallbackQueryHandler(back_to_menu_callback, pattern="back_to_menu"))
     app.add_handler(CallbackQueryHandler(users_log_callback, pattern="users_log"))
     app.add_handler(CallbackQueryHandler(usage_log_callback, pattern="usage_log"))
-    app.add_handler(
-        CallbackQueryHandler(
-            claim_reward_callback,
-            pattern=r"^claim_reward(?:\|.*)?$",
-        )
-    )
+    app.add_handler(CallbackQueryHandler(claim_reward_callback, pattern="claim_reward"))
 
     # ثبت گیف نظرسنجی توسط ادمین (انیمیشن/ویدیو/فایل در چت خصوصی)
     # نکته: filters.Document.ANIMATION در python-telegram-bot وجود ندارد؛
