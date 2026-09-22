@@ -1130,8 +1130,8 @@ async def my_points_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         points = 0
 
     await update.message.reply_text(
-        f"📊 امتیاز فعلی شما: {points}",
-        reply_markup=branch_menu_kb(context.user_data.get("branch"), user_id),
+        f"📊 امتیاز فعلی شما: {points}"
+        , reply_markup=branch_menu_kb(context.user_data.get("branch"), user_id),
     )
 
 

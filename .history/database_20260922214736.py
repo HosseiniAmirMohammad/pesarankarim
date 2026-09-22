@@ -1320,7 +1320,6 @@ def get_review_rewards(limit=10, offset=0, branch=None):
     conn.close()
     return [dict(row) for row in result]
 
-
 def get_user_points(user_id):
     """Calculate a user's points total based on review_rewards table.
 
@@ -1336,25 +1335,17 @@ def get_user_points(user_id):
     c = conn.cursor()
     try:
         # count google (default) claims
-        c.execute(
-            "SELECT COUNT(*) FROM review_rewards WHERE user_id = ? AND status = 'claimed'",
-            (user_id,),
-        )
+        c.execute("SELECT COUNT(*) FROM review_rewards WHERE user_id = ? AND status = 'claimed'", (user_id,))
         google_claims = c.fetchone()[0]
         # count nshn claims
-        c.execute(
-            "SELECT COUNT(*) FROM review_rewards WHERE user_id = ? AND status = 'nshn'",
-            (user_id,),
-        )
+        c.execute("SELECT COUNT(*) FROM review_rewards WHERE user_id = ? AND status = 'nshn'", (user_id,))
         nshn_claims = c.fetchone()[0]
         conn.close()
         # constants are imported in the main module; keep defaults here
         try:
             from config import REWARD_POINTS, NSHN_REWARD_POINTS
 
-            return google_claims * int(REWARD_POINTS) + nshn_claims * int(
-                NSHN_REWARD_POINTS
-            )
+            return google_claims * int(REWARD_POINTS) + nshn_claims * int(NSHN_REWARD_POINTS)
         except Exception:
             return google_claims * 10 + nshn_claims * 50
     except Exception as e:

@@ -562,7 +562,6 @@ BTN_TEHRAN_SOCIAL = KeyboardButton("شبکه های اجتماعی ما")
 BTN_TEHRAN_HISTORY = KeyboardButton("تاریخچه پسران کریم")
 BTN_CHANGE_BRANCH = KeyboardButton("تغییر شعبه")
 BTN_SUPPORT = KeyboardButton("پشتیبانی")
-BTN_MY_POINTS = KeyboardButton("📊 امتیاز من")
 
 BTN_BACK_TEXT = "بازگشت"
 BTN_BACK = KeyboardButton(BTN_BACK_TEXT)
@@ -981,7 +980,6 @@ def mashhad_menu_kb(user_id=None):
         [BTN_MASHHAD_LOCATION, BTN_MASHHAD_ADDRESS],
         [BTN_MASHHAD_SOCIAL, BTN_MASHHAD_HISTORY],
         [BTN_CHANGE_BRANCH, BTN_SUPPORT],
-        [BTN_MY_POINTS],
     ]
     if user_id and is_admin(user_id):
         keyboard.insert(0, [BTN_ADMIN_PANEL])
@@ -998,7 +996,6 @@ def tehran_menu_kb(user_id=None):
         [BTN_TEHRAN_LOCATION, BTN_TEHRAN_ADDRESS],
         [BTN_TEHRAN_SOCIAL, BTN_TEHRAN_HISTORY],
         [BTN_CHANGE_BRANCH, BTN_SUPPORT],
-        [BTN_MY_POINTS],
     ]
     if user_id and is_admin(user_id):
         keyboard.insert(0, [BTN_ADMIN_PANEL])
@@ -1117,21 +1114,6 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "به پنل مدیریت خوش آمدید.\n\n" "یکی از گزینه‌های زیر را انتخاب کنید:",
         reply_markup=admin_panel_kb(),
         parse_mode="Markdown",
-    )
-
-
-async def my_points_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show the user's total points (calculated from review_rewards)."""
-    user_id = update.effective_user.id
-    try:
-        points = get_user_points(user_id)
-    except Exception as e:
-        print(f"❌ خطا در خواندن امتیاز کاربر: {e}")
-        points = 0
-
-    await update.message.reply_text(
-        f"📊 امتیاز فعلی شما: {points}",
-        reply_markup=branch_menu_kb(context.user_data.get("branch"), user_id),
     )
 
 
@@ -3829,14 +3811,6 @@ def main():
         MessageHandler(
             filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
             handle_all_messages,
-        )
-    )
-
-    # هندلر دکمه «📊 امتیاز من»
-    app.add_handler(
-        MessageHandler(
-            filters.Regex(r"^📊 امتیاز من$") & filters.ChatType.PRIVATE,
-            my_points_handler,
         )
     )
 

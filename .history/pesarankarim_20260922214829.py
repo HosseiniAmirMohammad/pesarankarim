@@ -1120,21 +1120,6 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def my_points_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show the user's total points (calculated from review_rewards)."""
-    user_id = update.effective_user.id
-    try:
-        points = get_user_points(user_id)
-    except Exception as e:
-        print(f"❌ خطا در خواندن امتیاز کاربر: {e}")
-        points = 0
-
-    await update.message.reply_text(
-        f"📊 امتیاز فعلی شما: {points}",
-        reply_markup=branch_menu_kb(context.user_data.get("branch"), user_id),
-    )
-
-
 async def admin_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
@@ -3829,14 +3814,6 @@ def main():
         MessageHandler(
             filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
             handle_all_messages,
-        )
-    )
-
-    # هندلر دکمه «📊 امتیاز من»
-    app.add_handler(
-        MessageHandler(
-            filters.Regex(r"^📊 امتیاز من$") & filters.ChatType.PRIVATE,
-            my_points_handler,
         )
     )
 
