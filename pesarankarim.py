@@ -1856,10 +1856,12 @@ async def claim_reward_callback(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e:
         print(f"❌ خطا در ثبت لاگ دریافت امتیاز: {e}")
 
-    # ۴) فقط یک پیام پایانی: تبریک + ۱۰ امتیاز هدیه
+    # ۴) فقط یک پیام پایانی: تبریک + ۱۰ امتیاز هدیه + بازگشت به منوی اصلی
     try:
         await context.bot.send_message(
-            chat_id=user_id, text=REWARD_CONGRATS_MESSAGE
+            chat_id=user_id,
+            text=REWARD_CONGRATS_MESSAGE,
+            reply_markup=branch_menu_kb(branch, user_id),
         )
     except Exception as e:
         print(f"❌ خطا در ارسال پیام تبریک: {e}")
@@ -1907,10 +1909,12 @@ async def claim_reward_button_handler(
     except Exception as e:
         print(f"❌ خطا در ثبت لاگ دریافت امتیاز: {e}")
 
-    # ۴) فقط یک پیام پایانی: تبریک + ۱۰ امتیاز هدیه
+    # ۴) فقط یک پیام پایانی: تبریک + ۱۰ امتیاز هدیه + بازگشت به منوی اصلی
     try:
         await context.bot.send_message(
-            chat_id=user_id, text=REWARD_CONGRATS_MESSAGE
+            chat_id=user_id,
+            text=REWARD_CONGRATS_MESSAGE,
+            reply_markup=branch_menu_kb(branch, user_id),
         )
     except Exception as e:
         print(f"❌ خطا در ارسال پیام تبریک: {e}")

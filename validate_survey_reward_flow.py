@@ -474,6 +474,19 @@ check(
     == "🎉 تبریک!\nشما 10 امتیاز هدیه گرفتید!\n\n"
     "از مهر ماندگار شما صمیمانه سپاسگزاریم و امیدواریم بتونیم مجددا توفیق میزبانی شمارو داشته باشیم!🙏😇🌸",
 )
+claim_markups = [
+    kwargs.get("reply_markup")
+    for name, kwargs in claim_context.bot.call_log
+    if name == "send_message"
+]
+check(
+    "همراه پیام تبریک، منوی اصلی بات برگشت",
+    any(
+        keyboard_texts(m) and "دریافت عکس یادگاری" in keyboard_texts(m)
+        for m in claim_markups
+    ),
+    str([keyboard_texts(m) for m in claim_markups]),
+)
 check(
     "دکمه دریافت امتیاز بعد از استفاده حذف شد",
     claim_update.callback_query.edit_message_reply_markup.await_count == 1

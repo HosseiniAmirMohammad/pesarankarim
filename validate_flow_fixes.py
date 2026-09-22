@@ -370,6 +370,16 @@ check(
     == "🎉 تبریک!\nشما 10 امتیاز هدیه گرفتید!\n\n"
     "از مهر ماندگار شما صمیمانه سپاسگزاریم و امیدواریم بتونیم مجددا توفیق میزبانی شمارو داشته باشیم!🙏😇🌸",
 )
+check(
+    "همراه پیام تبریک، منوی اصلی بات برگشت",
+    any(
+        isinstance(m, bot.ReplyKeyboardMarkup)
+        and keyboard_texts(m)
+        and "دریافت عکس یادگاری" in keyboard_texts(m)
+        and "پشتیبانی" in keyboard_texts(m)
+        for m in reply_markups_sent_to(claim_context, CUSTOMER)
+    ),
+)
 
 # ===========================================================================
 # نتیجه نهایی
