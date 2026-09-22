@@ -918,32 +918,16 @@ async def send_review_gif(context, chat_id, branch):
 
 async def send_review_request_messages(context, chat_id, branch):
     """بعد از اعلام رضایت ۵ ستاره: پیام تشکر (بدون لینک و بدون دکمه) ← گیف ← دکمه «✅ نظر دادم»"""
-    # send a short thank-you text with a Google link button, then gif, then schedule 5-minute claim keyboard
-    google_link = google_map_link(branch)
-    kb = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("🔗 ثبت نظر در گوگل مپ", url=google_link)]]
-    )
     await context.bot.send_message(
-        chat_id=chat_id, text=GOOGLE_REVIEW_MESSAGE, reply_markup=kb
+        chat_id=chat_id,
+        text=GOOGLE_REVIEW_MESSAGE,
     )
     await send_review_gif(context, chat_id, branch)
-
-    async def delayed_google_claim():
-        await asyncio.sleep(5 * 60)
-        try:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text="اگر در گوگل مپ نظر دادید دکمه را بزنید:",
-                reply_markup=ReplyKeyboardMarkup(
-                    [[KeyboardButton("✅ نظر دادم")]],
-                    resize_keyboard=True,
-                    one_time_keyboard=True,
-                ),
-            )
-        except Exception as e:
-            print(f"❌ خطا در ارسال دکمه نظر دادم گوگل: {e}")
-
-    asyncio.create_task(delayed_google_claim())
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text="اگر نظر خود را بیان کردید روی دکمه زیر کلیک کنید:",
+        reply_markup=review_done_keyboard(branch),
+    )
 
 
 def admin_panel_kb():

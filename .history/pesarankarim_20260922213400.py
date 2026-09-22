@@ -920,12 +920,8 @@ async def send_review_request_messages(context, chat_id, branch):
     """بعد از اعلام رضایت ۵ ستاره: پیام تشکر (بدون لینک و بدون دکمه) ← گیف ← دکمه «✅ نظر دادم»"""
     # send a short thank-you text with a Google link button, then gif, then schedule 5-minute claim keyboard
     google_link = google_map_link(branch)
-    kb = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("🔗 ثبت نظر در گوگل مپ", url=google_link)]]
-    )
-    await context.bot.send_message(
-        chat_id=chat_id, text=GOOGLE_REVIEW_MESSAGE, reply_markup=kb
-    )
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 ثبت نظر در گوگل مپ", url=google_link)]])
+    await context.bot.send_message(chat_id=chat_id, text=GOOGLE_REVIEW_MESSAGE, reply_markup=kb)
     await send_review_gif(context, chat_id, branch)
 
     async def delayed_google_claim():
