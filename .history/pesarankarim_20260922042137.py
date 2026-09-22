@@ -636,13 +636,16 @@ PHOTO_DELIVERED_MESSAGE = (
 )
 
 # ===== پیامهای نظرسنجی =====
-SURVEY_FIVE_STAR_QUESTION = "📊 نظرسنجی رضایت\n\nاز ۵ ستاره به ما ۵ ستاره می‌دهید؟"
+SURVEY_FIVE_STAR_QUESTION = (
+    "📊 نظرسنجی رضایت\n\nاز ۵ ستاره به ما ۵ ستاره می‌دهید؟"
+)
 
 GOOGLE_REVIEW_MESSAGE = (
-    "ضمن عرض تشکر و قدردانی از رضایت شما\n\n"
-    "از همراهی شما در ارزیابی عملکرد رستوران سپاسگزاریم.\n"
-    "ثبت نظر شما برای ما ارزشمند است و ما را در بهتر شدن یاری می‌کند.\n\n"
-    "پس از ثبت نظر، روی دکمه زیر بزنید تا ثبت شما کامل شود."
+    "ضمن عرض تشکر و قدردانی از رضایت شما\n"
+    "لینک کاملا رسمی و قانونی در گوگل مپ جهت اعلام نظر شما طراحی شده است\n"
+    "لطفا به این لینک ورود کرده و ضمن اعلام نظرتون در مورد کم و کِیف عملکرد رستوران، نمره ۵ ستاره را برای ما داخل گوگل مپ به یادگار بگذارید\n"
+    "این کار بالاترین هدیه شماست در جهت رشد روزافزون ما\n"
+    "👇لینک نظر دهی👇"
 )
 
 LOW_RATING_REQUEST_MESSAGE = (
@@ -659,10 +662,14 @@ REWARD_INVITE_MESSAGE = (
     f"اگر نظر ۵ ستاره خود را در گوگل مپ ثبت کردید، با دکمه زیر {REWARD_POINTS} امتیاز هدیه بگیرید:"
 )
 
-REWARD_THANKS_MESSAGE = "از مهر ماندگار شما صمیمانه سپاسگزاریم و امیدواریم بتونیم مجددا توفیق میزبانی شمارو داشته باشیم🙏😇🌸"
+REWARD_THANKS_MESSAGE = (
+    "از مهر ماندگار شما صمیمانه سپاسگزاریم و امیدواریم بتونیم مجددا توفیق میزبانی شمارو داشته باشیم🙏😇🌸"
+)
 
 # اگر ارسال/کپی پیام گیف ممکن نبود، این متن با دکمه «✅ نظر دادم» فرستاده می‌شود
-REVIEW_GIF_FALLBACK_MESSAGE = "📍 لطفا نظر خود را درباره کم و کِیف عملکرد رستوران ثبت کنید و پس از آن روی دکمه زیر بزنید👇"
+REVIEW_GIF_FALLBACK_MESSAGE = (
+    "📍 لطفا نظر خود را درباره کم و کِیف عملکرد رستوران ثبت کنید و پس از آن روی دکمه زیر بزنید👇"
+)
 
 # متن دکمه‌های ثبت/حذف گیف نظرسنجی هر شعبه
 REVIEW_GIF_SET_TEXTS = {
@@ -731,16 +738,16 @@ def low_rating_kb():
 
 
 def reward_received_text(branch, claims_count=None):
-    """متن پیام تبریک و اعلام هدیه امتیاز بعد از ثبت نظر"""
+    """متن پیام تبریک و دریافت امتیاز برای مشتری"""
     now = jdatetime.datetime.now().strftime("%Y/%m/%d - %H:%M")
     text = (
-        f"🎉 تبریک! شما {REWARD_POINTS} امتیاز گرفتید\n\n"
-        "✅ سپاس از همراهی شما در حمایت از رستوران\n"
+        f"🎉 تبریک! نظر ۵ ستاره شما ثبت شد\n\n"
+        f"🎁 {REWARD_POINTS} امتیاز هدیه به شما اهدا شد✅\n"
         f"📍 شعبه: {branch_display_name(branch)}\n"
         f" زمان ثبت: {now}"
     )
     if claims_count and claims_count > 1:
-        text += f"\n\n🔹 این {claims_count}اُمین ثبت نظر شما در این شعبه است."
+        text += f"\n\n🔹 این {claims_count}اُمین اعلام دریافت امتیاز شما در این شعبه است."
     return text
 
 
@@ -1794,9 +1801,9 @@ async def claim_reward_callback(update: Update, context: ContextTypes.DEFAULT_TY
     user_id = query.from_user.id
     branch = "tehran" if "tehran" in (query.data or "") else "mashhad"
 
-    # ۱) اعلان فوری به کاربر: «شما ۱۰ امتیاز گرفتید»
+    # ۱) تایید غیرمستقیم ثبت درخواست؛ پیام «۱۰ امتیاز گرفتید» حذف شد تا اعتماد کاربران خدشه‌دار نشود
     try:
-        await query.answer(f"🎁 شما {REWARD_POINTS} امتیاز گرفتید")
+        await query.answer("✅ ثبت شد")
     except Exception as e:
         print(f"ℹ️ answer دکمه نظر دادم ممکن نشد: {e}")
 
@@ -2213,7 +2220,9 @@ async def handle_admin_response(update: Update, context: ContextTypes.DEFAULT_TY
 
         # در گروه‌های کاری، پنل مدیریت فرستاده نمی‌شود و کیبورد گیرکرده
         # بله/خیر از صفحه ادمین پاک می‌شود تا دکمه‌ها بی‌اثر نمانند
-        chat_type = getattr(getattr(update, "effective_chat", None), "type", "private")
+        chat_type = getattr(
+            getattr(update, "effective_chat", None), "type", "private"
+        )
         if chat_type and chat_type != "private":
             await update.message.reply_text(
                 finished_text + "\n\n🔙 برای ادامه در ربات خصوصی پیام بدهید.",
@@ -2452,9 +2461,7 @@ async def handle_all_messages(update, context):
         return
 
     survey_state = user_state(context, user_id)
-    survey_step = (
-        survey_state.get("survey_step") if isinstance(survey_state, dict) else None
-    )
+    survey_step = survey_state.get("survey_step") if isinstance(survey_state, dict) else None
 
     if survey_step_is_answer(survey_step, text):
         if survey_step == "rating_low":
@@ -3558,9 +3565,7 @@ def main():
     for photo_group_chat_id in (GROUP_MASHHAD_PHOTO, GROUP_TEHRAN_PHOTO):
         app.add_handler(
             MessageHandler(
-                filters.TEXT
-                & ~filters.COMMAND
-                & filters.Chat(chat_id=photo_group_chat_id),
+                filters.TEXT & ~filters.COMMAND & filters.Chat(chat_id=photo_group_chat_id),
                 handle_photo_group_text,
             )
         )

@@ -346,11 +346,12 @@ asyncio.run(bot.claim_reward_callback(claim_update, claim_context))
 claim_rows = db_rows("SELECT * FROM review_rewards WHERE user_id = ?", (CUSTOMER,))
 check("ثبت امتیاز در دیتابیس", len(claim_rows) == 1)
 check(
-    "پیام تبریک و اعلام ۱۰ امتیاز برای کاربر ارسال شد",
+    "پیام تبریک بدون اشاره به امتیاز عددی برای کاربر ارسال شد",
     any(
-        "تبریک" in (t or "") and "10 امتیاز" in (t or "")
+        "تبریک" in (t or "") and "ثبت نظر" in (t or "")
         for t in messages_to(claim_context, CUSTOMER)
-    ),
+    )
+    and not any("10 امتیاز" in (t or "") for t in messages_to(claim_context, CUSTOMER)),
 )
 check(
     "بعد از دریافت امتیاز، منوی اصلی ارسال شد",

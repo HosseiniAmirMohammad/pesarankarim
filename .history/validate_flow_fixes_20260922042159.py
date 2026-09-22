@@ -188,10 +188,7 @@ group_update = make_update(
 )
 asyncio.run(bot.handle_photo_group_text(group_update, group_context))
 
-check(
-    "وضعیت آپلود ادمین در گروه بسته شد",
-    group_context.user_data.get("admin_upload") is None,
-)
+check("وضعیت آپلود ادمین در گروه بسته شد", group_context.user_data.get("admin_upload") is None)
 check(
     "در گروه پیام پایان کار ارسال شد",
     any("همه عکس‌ها ارسال شدند" in t for t in reply_texts(group_update)),
@@ -210,9 +207,7 @@ check(
 check(
     "کپشن عکس‌های ارسالی (در صورت وجود) متن تحویل عکس است",
     not sent_captions(group_context, CUSTOMER)
-    or all(
-        c == bot.PHOTO_DELIVERED_MESSAGE for c in sent_captions(group_context, CUSTOMER)
-    ),
+    or all(c == bot.PHOTO_DELIVERED_MESSAGE for c in sent_captions(group_context, CUSTOMER)),
 )
 check(
     "پیام تحویل عکس دیگر جداگانه ارسال نمی‌شود",
@@ -231,14 +226,7 @@ other_update = make_update(
     message=FakeMessage("سلام", chat_id=bot.GROUP_MASHHAD_PHOTO),
 )
 other_context = make_context(
-    {
-        "admin_upload": {
-            "phone": "1",
-            "photo_code": "2",
-            "branch": "mashhad",
-            "user_id": 5,
-        }
-    }
+    {"admin_upload": {"phone": "1", "photo_code": "2", "branch": "mashhad", "user_id": 5}}
 )
 asyncio.run(bot.handle_photo_group_text(other_update, other_context))
 check(
@@ -288,7 +276,8 @@ check(
     all(
         kwargs.get("reply_markup") is None
         for name, kwargs in survey_context.bot.call_log
-        if name == "send_message" and kwargs.get("text") == bot.GOOGLE_REVIEW_MESSAGE
+        if name == "send_message"
+        and kwargs.get("text") == bot.GOOGLE_REVIEW_MESSAGE
     ),
 )
 check(
@@ -302,9 +291,7 @@ check(
 )
 check(
     "پیام دعوت به دریافت امتیاز جداگانه دیگر ارسال نمی‌شود",
-    not any(
-        "هدیه 10 امتیازی" in (t or "") for t in messages_to(survey_context, CUSTOMER)
-    ),
+    not any("هدیه 10 امتیازی" in (t or "") for t in messages_to(survey_context, CUSTOMER)),
 )
 check(
     "بعد از بله، منوی اصلی برای کاربر ارسال شد",
@@ -346,11 +333,12 @@ asyncio.run(bot.claim_reward_callback(claim_update, claim_context))
 claim_rows = db_rows("SELECT * FROM review_rewards WHERE user_id = ?", (CUSTOMER,))
 check("ثبت امتیاز در دیتابیس", len(claim_rows) == 1)
 check(
-    "پیام تبریک و اعلام ۱۰ امتیاز برای کاربر ارسال شد",
+    "پیام تبریک بدون اشاره به امتیاز عددی برای کاربر ارسال شد",
     any(
-        "تبریک" in (t or "") and "10 امتیاز" in (t or "")
+        "تبریک" in (t or "") and "ثبت نظر" in (t or "")
         for t in messages_to(claim_context, CUSTOMER)
-    ),
+    )
+    and not any("10 امتیاز" in (t or "") for t in messages_to(claim_context, CUSTOMER)),
 )
 check(
     "بعد از دریافت امتیاز، منوی اصلی ارسال شد",

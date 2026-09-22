@@ -386,15 +386,10 @@ check(
     str(copy_call.get("from_chat_id")),
 )
 
-map_buttons = inline_buttons(
-    reply_markup_of(delivery_context, CUSTOMER_MASHHAD, bot.GOOGLE_REVIEW_MESSAGE)
-)
 check(
-    "زیر پیام تشکر، دکمه لینک گوگل مپ شعبه مشهد هست",
-    len(map_buttons) == 1 and map_buttons[0].url == bot.GOOGLE_MAP_MASHHAD,
-    str([getattr(b, "url", None) for b in map_buttons]),
+    "پیام تشکر بدون دکمه ارسال می‌شود (دکمه لینک گوگل حذف شد)",
+    reply_markup_of(delivery_context, CUSTOMER_MASHHAD, bot.GOOGLE_REVIEW_MESSAGE) is None,
 )
-
 review_done_buttons = inline_buttons(copy_call.get("reply_markup"))
 check(
     "دکمه «✅ نظر دادم» زیر گیف هست",
@@ -605,14 +600,8 @@ check(
     str([getattr(b, "callback_data", None) for b in tehran_review_buttons]),
 )
 check(
-    "زیر پیام تشکر تهران، دکمه لینک گوگل مپ تهران هست",
-    [
-        button.url
-        for button in inline_buttons(
-            reply_markup_of(tehran_context, CUSTOMER_TEHRAN, bot.GOOGLE_REVIEW_MESSAGE)
-        )
-    ]
-    == [bot.GOOGLE_MAP_TEHRAN],
+    "پیام تشکر تهران بدون دکمه ارسال می‌شود (دکمه لینک گوگل حذف شد)",
+    reply_markup_of(tehran_context, CUSTOMER_TEHRAN, bot.GOOGLE_REVIEW_MESSAGE) is None,
 )
 
 # ---------------------------------------------------------------------------

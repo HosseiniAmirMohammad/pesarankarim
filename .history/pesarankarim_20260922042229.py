@@ -731,10 +731,10 @@ def low_rating_kb():
 
 
 def reward_received_text(branch, claims_count=None):
-    """متن پیام تبریک و اعلام هدیه امتیاز بعد از ثبت نظر"""
+    """متن پیام تبریک و ثبت نظر؛ بدون اشاره به امتیاز عددی برای کاربر"""
     now = jdatetime.datetime.now().strftime("%Y/%m/%d - %H:%M")
     text = (
-        f"🎉 تبریک! شما {REWARD_POINTS} امتیاز گرفتید\n\n"
+        "🎉 تبریک! ثبت نظر شما با موفقیت انجام شد\n\n"
         "✅ سپاس از همراهی شما در حمایت از رستوران\n"
         f"📍 شعبه: {branch_display_name(branch)}\n"
         f" زمان ثبت: {now}"
@@ -1794,9 +1794,9 @@ async def claim_reward_callback(update: Update, context: ContextTypes.DEFAULT_TY
     user_id = query.from_user.id
     branch = "tehran" if "tehran" in (query.data or "") else "mashhad"
 
-    # ۱) اعلان فوری به کاربر: «شما ۱۰ امتیاز گرفتید»
+    # ۱) تایید غیرمستقیم ثبت درخواست؛ پیام «۱۰ امتیاز گرفتید» حذف شد تا اعتماد کاربران خدشه‌دار نشود
     try:
-        await query.answer(f"🎁 شما {REWARD_POINTS} امتیاز گرفتید")
+        await query.answer("✅ ثبت شد")
     except Exception as e:
         print(f"ℹ️ answer دکمه نظر دادم ممکن نشد: {e}")
 
