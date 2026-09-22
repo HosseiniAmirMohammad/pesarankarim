@@ -1125,14 +1125,48 @@ async def my_points_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show the user's total points (calculated from review_rewards)."""
     user_id = update.effective_user.id
     try:
-        points = get_user_points(user_id)
+        breakdown = get_user_points_breakdown(user_id)
+        points = breakdown.get("total", 0)
+        google_claims = breakdown.get("google_claims", 0)
+        nshn_claims = breakdown.get("nshn_claims", 0)
     except Exception as e:
         print(f"❌ خطا در خواندن امتیاز کاربر: {e}")
         points = 0
+        google_claims = 0
+        nshn_claims = 0
 
     await update.message.reply_text(
-        f"📊 امتیاز فعلی شما: {points}",
+        (
+            f"📊 امتیاز فعلی شما: {points}\n\n"
+            f"🔹 دریافت‌های گوگل: {google_claims} (هر کدام {REWARD_POINTS} امتیاز)\n"
+            f"🔹 دریافت‌های نشان: {nshn_claims} (هر کدام {NSHN_REWARD_POINTS} امتیاز)"
+        ),
         reply_markup=branch_menu_kb(context.user_data.get("branch"), user_id),
+    )
+
+
+async def claim_nshn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Test helper: immediately register an NSHN (نشان) claim for the current user.
+
+    Use this in chat: `/claim_nshn` — it inserts a review_rewards row with status='nshn'.
+    Intended for testing/demo; you can remove it later.
+    """
+    user_id = update.effective_user.id
+    branch = context.user_data.get("branch", "mashhad")
+    try:
+        phone = None
+        try:
+            phone = get_last_request_phone(user_id)
+        except Exception:
+            phone = None
+        result = save_review_reward(user_id=user_id, phone=phone, branch=branch, status="nshn")
+    except Exception as e:
+        print(f"❌ خطا در ثبت تست نشان: {e}")
+        await update.message.reply_text("❌ خطا در ثبت امتیاز نشان برای شما.")
+        return
+
+    await update.message.reply_text(
+        NSHN_REWARD_CONGRATS_MESSAGE, reply_markup=branch_menu_kb(branch, user_id)
     )
 
 
@@ -3756,6 +3790,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_command))
+    app.add_handler(CommandHandler("claim_nshn", claim_nshn_command))
 
     app.add_handler(CallbackQueryHandler(check_callback, pattern="check"))
     app.add_handler(CallbackQueryHandler(back_to_menu_callback, pattern="back_to_menu"))

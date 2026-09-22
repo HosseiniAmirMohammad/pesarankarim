@@ -1366,6 +1366,50 @@ def get_user_points(user_id):
         return 0
 
 
+def get_user_points_breakdown(user_id):
+    """Return a breakdown of claims and total points for a user.
+
+    Returns dict: {"google_claims": int, "nshn_claims": int, "total": int}
+    """
+    if not user_id:
+        return {"google_claims": 0, "nshn_claims": 0, "total": 0}
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute(
+            "SELECT COUNT(*) FROM review_rewards WHERE user_id = ? AND status = 'claimed'",
+            (user_id,),
+        )
+        google_claims = c.fetchone()[0]
+        c.execute(
+            "SELECT COUNT(*) FROM review_rewards WHERE user_id = ? AND status = 'nshn'",
+            (user_id,),
+        )
+        nshn_claims = c.fetchone()[0]
+        conn.close()
+        try:
+            from config import REWARD_POINTS, NSHN_REWARD_POINTS
+
+            total = google_claims * int(REWARD_POINTS) + nshn_claims * int(
+                NSHN_REWARD_POINTS
+            )
+        except Exception:
+            total = google_claims * 10 + nshn_claims * 50
+        return {
+            "google_claims": google_claims,
+            "nshn_claims": nshn_claims,
+            "total": total,
+        }
+    except Exception as e:
+        print(f"❌ خطا در محاسبه‌ی جزئیات امتیاز کاربر: {e}")
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return {"google_claims": 0, "nshn_claims": 0, "total": 0}
+
+
 def get_review_rewards_count(branch=None):
     """تعداد کل اعلام‌های دریافت امتیاز"""
     conn = get_db_connection()
