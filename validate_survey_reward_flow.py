@@ -351,26 +351,30 @@ asyncio.run(
 )
 
 review_events = events_to(delivery_context, CUSTOMER_MASHHAD)
+review_prompt = "اگر نظر خود را بیان کردید روی دکمه زیر کلیک کنید:"
 check(
-    "پیام تشکر و لینک گوگل مپ ارسال شد",
-    ("message", bot.GOOGLE_REVIEW_MESSAGE) in review_events,
+    "پیام تشکر همراه لینک گوگل مپ (به‌صورت متن) ارسال شد",
+    ("message", bot.google_review_message("mashhad")) in review_events
+    or ("message", bot.GOOGLE_REVIEW_MESSAGE) in review_events,
+    str(review_events),
 )
 check(
     "پیام گیف گروه لیست انتظار برای مشتری کپی شد",
     ("copy", bot.review_gif_message_id("mashhad")) in review_events,
 )
 check(
-    "بعد از گیف، منوی اصلی برای مشتری ارسال می‌شود",
-    ("message", "لطفا یکی از گزینه‌های زیر را انتخاب کنید:") in review_events,
+    "بعد از گیف، پیام دکمه «✅ نظر دادم» ارسال می‌شود",
+    ("message", review_prompt) in review_events,
 )
 check(
-    "ترتیب پیام‌ها: تشکر و گوگل مپ ← گیف ← منوی اصلی",
+    "ترتیب پیام‌ها: تشکر و گوگل مپ ← گیف ← دکمه نظر دادم",
     review_events
     == [
-        ("message", bot.GOOGLE_REVIEW_MESSAGE),
+        ("message", review_events[0][1]),
         ("copy", bot.review_gif_message_id("mashhad")),
-        ("message", "لطفا یکی از گزینه‌های زیر را انتخاب کنید:"),
-    ],
+        ("message", review_prompt),
+    ]
+    and "ضمن عرض تشکر" in (review_events[0][1] or ""),
     str(review_events),
 )
 
@@ -387,16 +391,38 @@ check(
 )
 
 check(
-    "پیام تشکر بدون دکمه ارسال می‌شود (دکمه لینک گوگل حذف شد)",
-    reply_markup_of(delivery_context, CUSTOMER_MASHHAD, bot.GOOGLE_REVIEW_MESSAGE) is None,
+    "پیام تشکر بدون هیچ دکمه‌ای ارسال می‌شود",
+    all(
+        kwargs.get("reply_markup") is None
+        for name, kwargs in delivery_context.bot.call_log
+        if name == "send_message"
+        and kwargs.get("chat_id") == CUSTOMER_MASHHAD
+        and "ضمن عرض تشکر" in (kwargs.get("text") or "")
+    ),
 )
-review_done_buttons = inline_buttons(copy_call.get("reply_markup"))
 check(
-    "دکمه «✅ نظر دادم» زیر گیف هست",
-    len(review_done_buttons) == 1
-    and review_done_buttons[0].text == "✅ نظر دادم"
-    and review_done_buttons[0].callback_data == "claim_reward|mashhad",
-    str([getattr(b, "callback_data", None) for b in review_done_buttons]),
+    "زیر گیف هیچ دکمه‌ای نیست",
+    copy_call.get("reply_markup") is None,
+    str(copy_call.get("reply_markup")),
+)
+check(
+    "دکمه کیبورد «✅ نظر دادم» در پیام بعد از گیف ارسال شد",
+    any(
+        keyboard_texts(kwargs.get("reply_markup")) == ["✅ نظر دادم"]
+        for name, kwargs in delivery_context.bot.call_log
+        if name == "send_message"
+        and kwargs.get("chat_id") == CUSTOMER_MASHHAD
+        and kwargs.get("text") == review_prompt
+    ),
+)
+check(
+    "هیچ دکمه لینک گوگل در جریان نظرسنجی وجود ندارد",
+    not any(
+        button.url and "google" in (button.url or "").lower()
+        for name, kwargs in delivery_context.bot.call_log
+        if name == "send_message" and kwargs.get("chat_id") == CUSTOMER_MASHHAD
+        for button in inline_buttons(kwargs.get("reply_markup"))
+    ),
 )
 check(
     "نظرسنجی ۵ ستاره برای مشتری ذخیره شد",
@@ -438,12 +464,15 @@ check(
 
 thanks_events = events_to(claim_context, CUSTOMER_MASHHAD)
 check(
-    "اول پیام تبریک و دریافت امتیاز و بعد پیام سپاسگزاری و منوی اصلی ارسال شد",
-    len(thanks_events) == 3
-    and "تبریک" in (thanks_events[0][1] or "")
-    and f"{bot.REWARD_POINTS} امتیاز هدیه" in (thanks_events[0][1] or "")
-    and thanks_events[1][1] == bot.REWARD_THANKS_MESSAGE,
+    "فقط یک پیام پایانی (تبریک + ۱۰ امتیاز هدیه) ارسال شد",
+    [event[1] for event in thanks_events] == [bot.REWARD_CONGRATS_MESSAGE],
     str(thanks_events),
+)
+check(
+    "متن پیام پایانی دقیقاً همان متن خواسته‌شده است",
+    bot.REWARD_CONGRATS_MESSAGE
+    == "🎉 تبریک!\nشما 10 امتیاز هدیه گرفتید!\n\n"
+    "از مهر ماندگار شما صمیمانه سپاسگزاریم و امیدواریم بتونیم مجددا توفیق میزبانی شمارو داشته باشیم!🙏😇🌸",
 )
 check(
     "دکمه دریافت امتیاز بعد از استفاده حذف شد",
@@ -593,15 +622,27 @@ check(
 )
 tehran_review_buttons = inline_buttons(animation_call.get("reply_markup"))
 check(
-    "دکمه «✅ نظر دادم» زیر گیف ثبت‌شده تهران هست",
-    len(tehran_review_buttons) == 1
-    and tehran_review_buttons[0].text == "✅ نظر دادم"
-    and tehran_review_buttons[0].callback_data == "claim_reward|tehran",
-    str([getattr(b, "callback_data", None) for b in tehran_review_buttons]),
+    "زیر گیف ثبت‌شده تهران هیچ دکمه‌ای نیست",
+    tehran_review_buttons == [],
+    str(tehran_review_buttons),
+)
+check(
+    "دکمه کیبورد «✅ نظر دادم» بعد از گیف تهران ارسال شد",
+    any(
+        keyboard_texts(kwargs.get("reply_markup")) == ["✅ نظر دادم"]
+        for name, kwargs in tehran_context.bot.call_log
+        if name == "send_message" and kwargs.get("chat_id") == CUSTOMER_TEHRAN
+    ),
 )
 check(
     "پیام تشکر تهران بدون دکمه ارسال می‌شود (دکمه لینک گوگل حذف شد)",
-    reply_markup_of(tehran_context, CUSTOMER_TEHRAN, bot.GOOGLE_REVIEW_MESSAGE) is None,
+    all(
+        kwargs.get("reply_markup") is None
+        for name, kwargs in tehran_context.bot.call_log
+        if name == "send_message"
+        and kwargs.get("chat_id") == CUSTOMER_TEHRAN
+        and "ضمن عرض تشکر" in (kwargs.get("text") or "")
+    ),
 )
 
 # ---------------------------------------------------------------------------

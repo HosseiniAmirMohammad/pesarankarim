@@ -355,13 +355,20 @@ check(
     ),
 )
 check(
-    "بعد از دریافت امتیاز، منوی اصلی ارسال شد",
-    any(
-        isinstance(m, bot.ReplyKeyboardMarkup)
-        and keyboard_texts(m)
-        and "دریافت عکس یادگاری" in keyboard_texts(m)
-        for m in reply_markups_sent_to(claim_context, CUSTOMER)
-    ),
+    "فقط یک پیام پایانی (تبریک + ۱۰ امتیاز) ارسال می‌شود",
+    [
+        t
+        for t in messages_to(claim_context, CUSTOMER)
+        if t is not None
+    ]
+    == [bot.REWARD_CONGRATS_MESSAGE],
+    str(messages_to(claim_context, CUSTOMER)),
+)
+check(
+    "متن پیام پایانی دقیقاً همان متن خواسته‌شده است",
+    bot.REWARD_CONGRATS_MESSAGE
+    == "🎉 تبریک!\nشما 10 امتیاز هدیه گرفتید!\n\n"
+    "از مهر ماندگار شما صمیمانه سپاسگزاریم و امیدواریم بتونیم مجددا توفیق میزبانی شمارو داشته باشیم!🙏😇🌸",
 )
 
 # ===========================================================================

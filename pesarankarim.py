@@ -676,6 +676,13 @@ REWARD_INVITE_MESSAGE = (
 
 REWARD_THANKS_MESSAGE = "از مهر ماندگار شما صمیمانه سپاسگزاریم و امیدواریم بتونیم مجددا توفیق میزبانی شمارو داشته باشیم🙏😇🌸"
 
+# پیام پایانی بعد از زدن دکمه «✅ نظر دادم» (فقط همین یک پیام ارسال می‌شود)
+REWARD_CONGRATS_MESSAGE = (
+    "🎉 تبریک!\n"
+    f"شما {REWARD_POINTS} امتیاز هدیه گرفتید!\n\n"
+    "از مهر ماندگار شما صمیمانه سپاسگزاریم و امیدواریم بتونیم مجددا توفیق میزبانی شمارو داشته باشیم!🙏😇🌸"
+)
+
 # اگر ارسال/کپی پیام گیف ممکن نبود، این متن با دکمه «✅ نظر دادم» فرستاده می‌شود
 REVIEW_GIF_FALLBACK_MESSAGE = "📍 لطفا نظر خود را درباره کم و کِیف عملکرد رستوران ثبت کنید و پس از آن روی دکمه زیر بزنید👇"
 
@@ -1849,28 +1856,13 @@ async def claim_reward_callback(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e:
         print(f"❌ خطا در ثبت لاگ دریافت امتیاز: {e}")
 
-    # ۴) پیام تبریک + سپاسگزاری + منوی اصلی (حتماً ارسال می‌شود)
+    # ۴) فقط یک پیام پایانی: تبریک + ۱۰ امتیاز هدیه
     try:
         await context.bot.send_message(
-            chat_id=user_id, text=reward_received_text(branch, claims_count)
+            chat_id=user_id, text=REWARD_CONGRATS_MESSAGE
         )
     except Exception as e:
         print(f"❌ خطا در ارسال پیام تبریک: {e}")
-        return
-
-    try:
-        await context.bot.send_message(chat_id=user_id, text=REWARD_THANKS_MESSAGE)
-    except Exception as e:
-        print(f"❌ خطا در ارسال پیام سپاسگزاری: {e}")
-
-    try:
-        await context.bot.send_message(
-            chat_id=user_id,
-            text="لطفا یکی از گزینه‌های زیر را انتخاب کنید:",
-            reply_markup=branch_menu_kb(branch, user_id),
-        )
-    except Exception as e:
-        print(f"❌ خطا در ارسال منوی اصلی: {e}")
 
 
 async def claim_reward_button_handler(
@@ -1883,18 +1875,13 @@ async def claim_reward_button_handler(
     user_id = update.effective_user.id
     branch = context.user_data.get("branch", "mashhad")
 
-    # ۱) اعلام برای کاربر
-    await update.message.reply_text(f"🎉 تبریک! شما {REWARD_POINTS} امتیاز گرفتید")
-
-    # ۲) حذف دکمه کیبورد (بعد از استفاده)
+    # ۱) حذف دکمه کیبورد (بعد از استفاده)
     try:
-        await update.message.reply_text(
-            "✅ ممنون از نظرسنجی شما", reply_markup=ReplyKeyboardRemove()
-        )
+        await update.message.reply_text(" ", reply_markup=ReplyKeyboardRemove())
     except Exception as e:
         print(f"ℹ️ حذف دکمه نظر دادم ممکن نشد: {e}")
 
-    # ۳) ثبت امتیاز در دیتابیس
+    # ۲) ثبت امتیاز در دیتابیس
     phone = None
     try:
         phone = get_last_request_phone(user_id)
@@ -1920,28 +1907,13 @@ async def claim_reward_button_handler(
     except Exception as e:
         print(f"❌ خطا در ثبت لاگ دریافت امتیاز: {e}")
 
-    # ۴) پیام تبریک + سپاسگزاری + منوی اصلی
+    # ۴) فقط یک پیام پایانی: تبریک + ۱۰ امتیاز هدیه
     try:
         await context.bot.send_message(
-            chat_id=user_id, text=reward_received_text(branch, claims_count)
+            chat_id=user_id, text=REWARD_CONGRATS_MESSAGE
         )
     except Exception as e:
         print(f"❌ خطا در ارسال پیام تبریک: {e}")
-        return
-
-    try:
-        await context.bot.send_message(chat_id=user_id, text=REWARD_THANKS_MESSAGE)
-    except Exception as e:
-        print(f"❌ خطا در ارسال پیام سپاسگزاری: {e}")
-
-    try:
-        await context.bot.send_message(
-            chat_id=user_id,
-            text="لطفا یکی از گزینه‌های زیر را انتخاب کنید:",
-            reply_markup=branch_menu_kb(branch, user_id),
-        )
-    except Exception as e:
-        print(f"❌ خطا در ارسال منوی اصلی: {e}")
 
 
 def user_state(context, user_id):
