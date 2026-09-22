@@ -658,7 +658,6 @@ def google_review_message(branch):
     """متن پیام بالا با لینک گوگل مخصوص شعبه، بدون دکمه لینک زیر گیف"""
     return f"{GOOGLE_REVIEW_MESSAGE}\n{google_map_link(branch)}"
 
-
 LOW_RATING_REQUEST_MESSAGE = (
     "متاسفیم که تجربه شما مطابق انتظار ما نبوده🙏\n\n"
     "لطفا از ۱ تا ۴ ستاره به ما امتیاز دهید:"
