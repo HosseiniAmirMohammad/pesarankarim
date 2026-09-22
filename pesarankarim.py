@@ -42,6 +42,7 @@ from database import (
     mark_request_as_sent,
     update_survey_comment,
     get_last_request_phone,
+    get_user_points,
     save_review_reward,
     get_review_rewards,
     get_review_rewards_count,
