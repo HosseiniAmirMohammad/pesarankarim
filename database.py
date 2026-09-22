@@ -269,7 +269,9 @@ def init_db():
     )
     c.execute("CREATE INDEX IF NOT EXISTS idx_users_joined_at ON users(joined_at)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_users_last_seen ON users(last_seen)")
-    c.execute("CREATE INDEX IF NOT EXISTS idx_usage_logs_user_id ON usage_logs(user_id)")
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_usage_logs_user_id ON usage_logs(user_id)"
+    )
     c.execute(
         "CREATE INDEX IF NOT EXISTS idx_usage_logs_created_at ON usage_logs(created_at)"
     )
@@ -1021,7 +1023,7 @@ def get_pending_requests(branch=None):
         c.execute(
             """
             SELECT id, phone, photo_code, photo_date, created_at,
-                   (strftime('%s', 'now') - strftime('%s', created_at)) / 3600 as hours
+                   ((strftime('%s', 'now', '+3 hours', '+30 minutes') - strftime('%s', created_at)) / 3600) as hours
             FROM photo_requests 
             WHERE status = 'pending' AND branch = ?
             ORDER BY created_at ASC
@@ -1031,7 +1033,7 @@ def get_pending_requests(branch=None):
     else:
         c.execute("""
             SELECT id, phone, photo_code, photo_date, created_at,
-                   (strftime('%s', 'now') - strftime('%s', created_at)) / 3600 as hours
+                   ((strftime('%s', 'now', '+3 hours', '+30 minutes') - strftime('%s', created_at)) / 3600) as hours
             FROM photo_requests 
             WHERE status = 'pending'
             ORDER BY created_at ASC
@@ -1052,7 +1054,7 @@ def get_pending_requests_with_users(branch=None):
         SELECT pr.id, pr.user_id, pr.phone, pr.photo_code, pr.photo_date, pr.branch,
                pr.created_at,
                u.first_name, u.username, u.joined_at,
-               (strftime('%s', 'now') - strftime('%s', pr.created_at)) / 3600 AS hours
+               ((strftime('%s', 'now', '+3 hours', '+30 minutes') - strftime('%s', pr.created_at)) / 3600) AS hours
         FROM photo_requests pr
         LEFT JOIN users u ON u.user_id = pr.user_id
         WHERE pr.status = 'pending'
@@ -1319,9 +1321,7 @@ def get_review_rewards(limit=10, offset=0, branch=None):
             (branch, limit, offset),
         )
     else:
-        c.execute(
-            base_query + " ORDER BY r.id DESC LIMIT ? OFFSET ?", (limit, offset)
-        )
+        c.execute(base_query + " ORDER BY r.id DESC LIMIT ? OFFSET ?", (limit, offset))
     result = c.fetchall()
     conn.close()
     return [dict(row) for row in result]
@@ -1419,7 +1419,9 @@ def clear_review_gif(branch):
     conn = get_db_connection()
     c = conn.cursor()
     try:
-        c.execute("DELETE FROM review_gifs WHERE branch = ?", (normalize_branch(branch),))
+        c.execute(
+            "DELETE FROM review_gifs WHERE branch = ?", (normalize_branch(branch),)
+        )
         conn.commit()
         return c.rowcount > 0
     except Exception as e:

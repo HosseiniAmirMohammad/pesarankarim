@@ -198,6 +198,11 @@ def to_iran_datetime(sqlite_timestamp):
     return parsed.replace(tzinfo=timezone.utc).astimezone(IRAN_TIMEZONE)
 
 
+def iran_now():
+    """زمان فعلی به وقت ایران برای نشان دادن تاریخ/ساعت و محاسبه اختلاف زمان"""
+    return datetime.now(IRAN_TIMEZONE)
+
+
 def format_persian_datetime(sqlite_timestamp, with_time=True):
     """نمایش زمان دیتابیس به صورت تاریخ شمسی و ساعت به وقت ایران"""
     dt = to_iran_datetime(sqlite_timestamp)
@@ -322,9 +327,10 @@ def waiting_list_text(branch):
     if not rows:
         return None
 
+    now_iran = iran_now()
     lines = [
         f"⏳ لیست کاربران در انتظار دریافت عکس — شعبه {branch_display_name(branch)}",
-        f"🕐 زمان گزارش: {jdatetime.datetime.now().strftime('%Y/%m/%d - %H:%M')}",
+        f"🕐 زمان گزارش: {now_iran.strftime('%Y/%m/%d - %H:%M')}",
         f"📊 تعداد در انتظار: {len(rows)} نفر",
         "",
         "──────────────────",
@@ -389,6 +395,7 @@ async def notify_waiting_group(
         else "⏳ لطفا عکس این کاربر ارسال شود."
     )
 
+    now_iran = iran_now()
     text = (
         "📸 درخواست عکس یادگاری جدید\n\n"
         f"📍 شعبه: {branch_display_name(branch)}\n"
@@ -397,7 +404,7 @@ async def notify_waiting_group(
         f"📱 شماره: {phone}\n"
         f"🏷️ کد عکس: {photo_code}\n"
         f"📅 تاریخ عکس: {photo_date or 'نامشخص'}\n"
-        f"🕐 زمان درخواست: {jdatetime.datetime.now().strftime('%Y/%m/%d - %H:%M')}\n\n"
+        f"🕐 زمان درخواست: {now_iran.strftime('%Y/%m/%d - %H:%M')}\n\n"
         f"{status_line}"
     )
 
