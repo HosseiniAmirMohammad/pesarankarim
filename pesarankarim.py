@@ -656,8 +656,8 @@ GOOGLE_REVIEW_MESSAGE = (
 
 
 def google_review_message(branch):
-    """متن پیام بالا با لینک گوگل مخصوص شعبه، بدون دکمه لینک زیر گیف"""
-    return f"{GOOGLE_REVIEW_MESSAGE}\n{google_map_link(branch)}"
+    """متن پیام تشکر بالای گیف (بدون لینک گوگل مپ)"""
+    return GOOGLE_REVIEW_MESSAGE
 
 
 LOW_RATING_REQUEST_MESSAGE = (
@@ -853,10 +853,10 @@ async def send_review_gif(context, chat_id, branch):
 
 
 async def send_review_request_messages(context, chat_id, branch):
-    """بعد از اعلام رضایت ۵ ستاره: پیام تشکر ← گیف ← دکمه کیبورد «✅ نظر دادم»"""
+    """بعد از اعلام رضایت ۵ ستاره: پیام تشکر (بدون لینک و بدون دکمه) ← گیف ← دکمه «✅ نظر دادم»"""
     await context.bot.send_message(
         chat_id=chat_id,
-        text=google_review_message(branch),
+        text=GOOGLE_REVIEW_MESSAGE,
     )
     await send_review_gif(context, chat_id, branch)
     await context.bot.send_message(

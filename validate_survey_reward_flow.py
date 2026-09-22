@@ -353,10 +353,18 @@ asyncio.run(
 review_events = events_to(delivery_context, CUSTOMER_MASHHAD)
 review_prompt = "اگر نظر خود را بیان کردید روی دکمه زیر کلیک کنید:"
 check(
-    "پیام تشکر همراه لینک گوگل مپ (به‌صورت متن) ارسال شد",
-    ("message", bot.google_review_message("mashhad")) in review_events
-    or ("message", bot.GOOGLE_REVIEW_MESSAGE) in review_events,
+    "پیام تشکر ارسال شد",
+    ("message", bot.GOOGLE_REVIEW_MESSAGE) in review_events,
     str(review_events),
+)
+check(
+    "لینک گوگل مپ در پیام تشکر حذف شده است (نه به‌صورت متن)",
+    not any(
+        "goo.gl" in (kwargs.get("text") or "")
+        or "http" in (kwargs.get("text") or "")
+        for name, kwargs in delivery_context.bot.call_log
+        if name == "send_message" and kwargs.get("chat_id") == CUSTOMER_MASHHAD
+    ),
 )
 check(
     "پیام گیف گروه لیست انتظار برای مشتری کپی شد",
@@ -422,6 +430,15 @@ check(
         for name, kwargs in delivery_context.bot.call_log
         if name == "send_message" and kwargs.get("chat_id") == CUSTOMER_MASHHAD
         for button in inline_buttons(kwargs.get("reply_markup"))
+    ),
+)
+check(
+    "لینک گوگل مپ در متن‌های ارسالی برای مشتری نیست",
+    not any(
+        ("goo.gl" in (kwargs.get("text") or ""))
+        or ("http" in (kwargs.get("text") or ""))
+        for name, kwargs in delivery_context.bot.call_log
+        if name == "send_message" and kwargs.get("chat_id") == CUSTOMER_MASHHAD
     ),
 )
 check(

@@ -304,6 +304,14 @@ check(
     ),
 )
 check(
+    "لینک گوگل مپ در متن پیام تشکر حذف شده است",
+    not any(
+        ("goo.gl" in (t or "")) or ("http" in (t or ""))
+        for t in messages_to(survey_context, CUSTOMER)
+    ),
+    str([t for t in messages_to(survey_context, CUSTOMER) if t and "http" in t]),
+)
+check(
     "پیام دعوت به دریافت امتیاز جداگانه دیگر ارسال نمی‌شود",
     not any(
         "هدیه 10 امتیازی" in (t or "") for t in messages_to(survey_context, CUSTOMER)
