@@ -1873,9 +1873,7 @@ async def claim_reward_callback(update: Update, context: ContextTypes.DEFAULT_TY
         print(f"❌ خطا در ارسال منوی اصلی: {e}")
 
 
-async def claim_reward_button_handler(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-):
+async def claim_reward_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """دکمه کیبورد «✅ نظر دادم» بعد از ثبت نظر ۵ ستاره در گوگل مپ"""
     if update.message is None or update.message.text != "✅ نظر دادم":
         return
@@ -1888,9 +1886,7 @@ async def claim_reward_button_handler(
 
     # ۲) حذف دکمه کیبورد (بعد از استفاده)
     try:
-        await update.message.reply_text(
-            "✅ ممنون از نظرسنجی شما", reply_markup=ReplyKeyboardRemove()
-        )
+        await update.message.reply_text("✅ ممنون از نظرسنجی شما", reply_markup=ReplyKeyboardRemove())
     except Exception as e:
         print(f"ℹ️ حذف دکمه نظر دادم ممکن نشد: {e}")
 

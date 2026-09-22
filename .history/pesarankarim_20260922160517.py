@@ -846,17 +846,12 @@ async def send_review_gif(context, chat_id, branch):
 
 
 async def send_review_request_messages(context, chat_id, branch):
-    """بعد از اعلام رضایت ۵ ستاره: پیام تشکر ← گیف ← دکمه کیبورد «✅ نظر دادم»"""
+    """بعد از اعلام رضایت ۵ ستاره: پیام تشکر با لینک گوگل (بدون دکمه لینک) ← گیف با دکمه «✅ نظر دادم»"""
     await context.bot.send_message(
         chat_id=chat_id,
         text=google_review_message(branch),
     )
     await send_review_gif(context, chat_id, branch)
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text="اگر نظر خود را بیان کردید روی دکمه زیر کلیک کنید:",
-        reply_markup=review_done_keyboard(branch),
-    )
 
 
 def admin_panel_kb():
@@ -1850,77 +1845,6 @@ async def claim_reward_callback(update: Update, context: ContextTypes.DEFAULT_TY
         print(f"❌ خطا در ثبت لاگ دریافت امتیاز: {e}")
 
     # ۴) پیام تبریک + سپاسگزاری + منوی اصلی (حتماً ارسال می‌شود)
-    try:
-        await context.bot.send_message(
-            chat_id=user_id, text=reward_received_text(branch, claims_count)
-        )
-    except Exception as e:
-        print(f"❌ خطا در ارسال پیام تبریک: {e}")
-        return
-
-    try:
-        await context.bot.send_message(chat_id=user_id, text=REWARD_THANKS_MESSAGE)
-    except Exception as e:
-        print(f"❌ خطا در ارسال پیام سپاسگزاری: {e}")
-
-    try:
-        await context.bot.send_message(
-            chat_id=user_id,
-            text="لطفا یکی از گزینه‌های زیر را انتخاب کنید:",
-            reply_markup=branch_menu_kb(branch, user_id),
-        )
-    except Exception as e:
-        print(f"❌ خطا در ارسال منوی اصلی: {e}")
-
-
-async def claim_reward_button_handler(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-):
-    """دکمه کیبورد «✅ نظر دادم» بعد از ثبت نظر ۵ ستاره در گوگل مپ"""
-    if update.message is None or update.message.text != "✅ نظر دادم":
-        return
-
-    user_id = update.effective_user.id
-    branch = context.user_data.get("branch", "mashhad")
-
-    # ۱) اعلام برای کاربر
-    await update.message.reply_text(f"🎉 تبریک! شما {REWARD_POINTS} امتیاز گرفتید")
-
-    # ۲) حذف دکمه کیبورد (بعد از استفاده)
-    try:
-        await update.message.reply_text(
-            "✅ ممنون از نظرسنجی شما", reply_markup=ReplyKeyboardRemove()
-        )
-    except Exception as e:
-        print(f"ℹ️ حذف دکمه نظر دادم ممکن نشد: {e}")
-
-    # ۳) ثبت امتیاز در دیتابیس
-    phone = None
-    try:
-        phone = get_last_request_phone(user_id)
-    except Exception as e:
-        print(f"❌ خطا در خواندن شماره آخرین درخواست کاربر: {e}")
-
-    claims_count = None
-    try:
-        result = save_review_reward(user_id=user_id, phone=phone, branch=branch)
-        claims_count = result.get("claims_count") if result else None
-    except Exception as e:
-        print(f"❌ خطا در ثبت امتیاز نظرسنجی: {e}")
-
-    try:
-        log_user_activity(
-            update.effective_user,
-            f"دریافت {REWARD_POINTS} امتیاز هدیه",
-            detail=(
-                f"شعبه {branch_display_name(branch)}"
-                + (f" | تلفن: {phone}" if phone else "")
-            ),
-        )
-    except Exception as e:
-        print(f"❌ خطا در ثبت لاگ دریافت امتیاز: {e}")
-
-    # ۴) پیام تبریک + سپاسگزاری + منوی اصلی
     try:
         await context.bot.send_message(
             chat_id=user_id, text=reward_received_text(branch, claims_count)
@@ -3678,14 +3602,6 @@ def main():
                 handle_photo_group_text,
             )
         )
-
-    # دکمه کیبورد «✅ نظر دادم» برای دریافت امتیاز هدیه
-    app.add_handler(
-        MessageHandler(
-            filters.Regex(r"^✅ نظر دادم$") & filters.ChatType.PRIVATE,
-            claim_reward_button_handler,
-        )
-    )
 
     # پیام‌های متنی فقط در چت خصوصی پردازش می‌شوند تا گروه‌ها پیام اضافه (مثل
     # «شما از کانال خارج شدید») دریافت نکنند

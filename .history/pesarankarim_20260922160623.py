@@ -1873,9 +1873,7 @@ async def claim_reward_callback(update: Update, context: ContextTypes.DEFAULT_TY
         print(f"❌ خطا در ارسال منوی اصلی: {e}")
 
 
-async def claim_reward_button_handler(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-):
+async def claim_reward_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """دکمه کیبورد «✅ نظر دادم» بعد از ثبت نظر ۵ ستاره در گوگل مپ"""
     if update.message is None or update.message.text != "✅ نظر دادم":
         return
@@ -1888,9 +1886,7 @@ async def claim_reward_button_handler(
 
     # ۲) حذف دکمه کیبورد (بعد از استفاده)
     try:
-        await update.message.reply_text(
-            "✅ ممنون از نظرسنجی شما", reply_markup=ReplyKeyboardRemove()
-        )
+        await update.message.reply_text("✅ ممنون از نظرسنجی شما", reply_markup=ReplyKeyboardRemove())
     except Exception as e:
         print(f"ℹ️ حذف دکمه نظر دادم ممکن نشد: {e}")
 
@@ -1939,9 +1935,6 @@ async def claim_reward_button_handler(
             chat_id=user_id,
             text="لطفا یکی از گزینه‌های زیر را انتخاب کنید:",
             reply_markup=branch_menu_kb(branch, user_id),
-        )
-    except Exception as e:
-        print(f"❌ خطا در ارسال منوی اصلی: {e}")
 
 
 def user_state(context, user_id):
@@ -3678,14 +3671,6 @@ def main():
                 handle_photo_group_text,
             )
         )
-
-    # دکمه کیبورد «✅ نظر دادم» برای دریافت امتیاز هدیه
-    app.add_handler(
-        MessageHandler(
-            filters.Regex(r"^✅ نظر دادم$") & filters.ChatType.PRIVATE,
-            claim_reward_button_handler,
-        )
-    )
 
     # پیام‌های متنی فقط در چت خصوصی پردازش می‌شوند تا گروه‌ها پیام اضافه (مثل
     # «شما از کانال خارج شدید») دریافت نکنند
