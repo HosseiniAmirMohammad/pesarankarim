@@ -656,8 +656,8 @@ GOOGLE_REVIEW_MESSAGE = (
 
 
 def google_review_message(branch):
-    """متن پیام تشکر بالای گیف (بدون لینک گوگل مپ)"""
-    return GOOGLE_REVIEW_MESSAGE
+    """متن پیام بالا با لینک گوگل مخصوص شعبه، بدون دکمه لینک زیر گیف"""
+    return f"{GOOGLE_REVIEW_MESSAGE}\n{google_map_link(branch)}"
 
 
 LOW_RATING_REQUEST_MESSAGE = (
@@ -666,13 +666,7 @@ LOW_RATING_REQUEST_MESSAGE = (
 )
 
 LOW_RATING_REASON_REQUEST_MESSAGE = (
-    "چنانچه انتقادی،پیشنهادی و یا فرمایشی دارید خوشحال میشیم بشنویم🙏🌹"
-)
-
-# پیامی که بعد از نوشتن انتقاد/پیشنهاد برای کاربر فرستاده می‌شود
-LOW_RATING_THANKS_MESSAGE = (
-    "حتما تمامی مواردی که فرمودین رو پیگیری میکنیم\n"
-    " ممنون از وقتی که گذاشتید و  امیدواریم مجددا توفیق میزبانی شمارو داشته باشیم و اینبار با رضایت کامل شما🙏💛"
+    "لطفا دلیل نارضایتی خود را کامل بنویسید تا همکاران ما آن را بررسی و پیگیری کنند:"
 )
 
 REWARD_INVITE_MESSAGE = (
@@ -681,13 +675,6 @@ REWARD_INVITE_MESSAGE = (
 )
 
 REWARD_THANKS_MESSAGE = "از مهر ماندگار شما صمیمانه سپاسگزاریم و امیدواریم بتونیم مجددا توفیق میزبانی شمارو داشته باشیم🙏😇🌸"
-
-# پیام پایانی بعد از زدن دکمه «✅ نظر دادم» (فقط همین یک پیام ارسال می‌شود)
-REWARD_CONGRATS_MESSAGE = (
-    "🎉 تبریک!\n"
-    f"شما {REWARD_POINTS} امتیاز هدیه گرفتید!\n\n"
-    "از مهر ماندگار شما صمیمانه سپاسگزاریم و امیدواریم بتونیم مجددا توفیق میزبانی شمارو داشته باشیم!🙏😇🌸"
-)
 
 # اگر ارسال/کپی پیام گیف ممکن نبود، این متن با دکمه «✅ نظر دادم» فرستاده می‌شود
 REVIEW_GIF_FALLBACK_MESSAGE = "📍 لطفا نظر خود را درباره کم و کِیف عملکرد رستوران ثبت کنید و پس از آن روی دکمه زیر بزنید👇"
@@ -859,10 +846,10 @@ async def send_review_gif(context, chat_id, branch):
 
 
 async def send_review_request_messages(context, chat_id, branch):
-    """بعد از اعلام رضایت ۵ ستاره: پیام تشکر (بدون لینک و بدون دکمه) ← گیف ← دکمه «✅ نظر دادم»"""
+    """بعد از اعلام رضایت ۵ ستاره: پیام تشکر ← گیف ← دکمه کیبورد «✅ نظر دادم»"""
     await context.bot.send_message(
         chat_id=chat_id,
-        text=GOOGLE_REVIEW_MESSAGE,
+        text=google_review_message(branch),
     )
     await send_review_gif(context, chat_id, branch)
     await context.bot.send_message(
@@ -1862,15 +1849,28 @@ async def claim_reward_callback(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e:
         print(f"❌ خطا در ثبت لاگ دریافت امتیاز: {e}")
 
-    # ۴) فقط یک پیام پایانی: تبریک + ۱۰ امتیاز هدیه + بازگشت به منوی اصلی
+    # ۴) پیام تبریک + سپاسگزاری + منوی اصلی (حتماً ارسال می‌شود)
     try:
         await context.bot.send_message(
-            chat_id=user_id,
-            text=REWARD_CONGRATS_MESSAGE,
-            reply_markup=branch_menu_kb(branch, user_id),
+            chat_id=user_id, text=reward_received_text(branch, claims_count)
         )
     except Exception as e:
         print(f"❌ خطا در ارسال پیام تبریک: {e}")
+        return
+
+    try:
+        await context.bot.send_message(chat_id=user_id, text=REWARD_THANKS_MESSAGE)
+    except Exception as e:
+        print(f"❌ خطا در ارسال پیام سپاسگزاری: {e}")
+
+    try:
+        await context.bot.send_message(
+            chat_id=user_id,
+            text="لطفا یکی از گزینه‌های زیر را انتخاب کنید:",
+            reply_markup=branch_menu_kb(branch, user_id),
+        )
+    except Exception as e:
+        print(f"❌ خطا در ارسال منوی اصلی: {e}")
 
 
 async def claim_reward_button_handler(
@@ -1915,15 +1915,19 @@ async def claim_reward_button_handler(
     except Exception as e:
         print(f"❌ خطا در ثبت لاگ دریافت امتیاز: {e}")
 
-    # ۴) فقط یک پیام پایانی: تبریک + ۱۰ امتیاز هدیه + بازگشت به منوی اصلی
+    # ۴) پیام تبریک + سپاسگزاری + منوی اصلی
     try:
         await context.bot.send_message(
-            chat_id=user_id,
-            text=REWARD_CONGRATS_MESSAGE,
-            reply_markup=branch_menu_kb(branch, user_id),
+            chat_id=user_id, text=reward_received_text(branch, claims_count)
         )
     except Exception as e:
         print(f"❌ خطا در ارسال پیام تبریک: {e}")
+        return
+
+    try:
+        await context.bot.send_message(chat_id=user_id, text=REWARD_THANKS_MESSAGE)
+    except Exception as e:
+        print(f"❌ خطا در ارسال پیام سپاسگزاری: {e}")
 
 
 def user_state(context, user_id):
@@ -2137,13 +2141,6 @@ async def finish_low_rating_survey(update, context, branch, reason):
         GROUP_MASHHAD_COMPLAINT if branch == "mashhad" else GROUP_TEHRAN_COMPLAINT
     )
 
-    # شماره‌ای که کاربر برای دریافت عکس وارد کرده است
-    request_phone = None
-    try:
-        request_phone = get_last_request_phone(user_id)
-    except Exception as e:
-        print(f"❌ خطا در خواندن شماره آخرین درخواست کاربر: {e}")
-
     try:
         await context.bot.send_message(
             chat_id=complaint_group,
@@ -2151,7 +2148,6 @@ async def finish_low_rating_survey(update, context, branch, reason):
                 "📝 نارضایتی جدید\n\n"
                 f"👤 کاربر: {getattr(update.effective_user, 'first_name', None) or 'کاربر بدون نام'}\n"
                 f"🆔 آیدی: {user_id}\n"
-                f"📱 شماره: {request_phone if request_phone else 'نامشخص'}\n"
                 f"📍 شعبه: {branch_display_name(branch)}\n"
                 f"⭐ امتیاز: {rating if rating else 'بدون امتیاز'}\n"
                 f"📝 پیام:\n{reason}"
@@ -2163,7 +2159,8 @@ async def finish_low_rating_survey(update, context, branch, reason):
     set_survey_step(context, user_id, None)
 
     await update.message.reply_text(
-        LOW_RATING_THANKS_MESSAGE,
+        "🙏 با تشکر از شما\n\n"
+        "پیام شما ثبت شد و برای بهبود کیفیت خدمات ما بسیار ارزشمند است.",
         reply_markup=branch_menu_kb(branch, user_id),
         parse_mode="Markdown",
     )

@@ -558,9 +558,16 @@ asyncio.run(bot.handle_all_messages(star_update, no_context))
 low_survey = survey_row(CUSTOMER_LOW_RATING)
 check("امتیاز انتخابی (۲ ستاره) ذخیره شد", (low_survey or {}).get("rating") == 2)
 check(
-    "بعد از انتخاب امتیاز، دلیل نارضایتی پرسیده شد",
-    any("دلیل نارضایتی" in text for text in reply_texts(star_update)),
+    "بعد از انتخاب امتیاز، امتیاز و متن درخواست انتقاد/پیشنهاد نمایش داده شد",
+    reply_texts(star_update)
+    and "⭐ امتیاز شما: 2 از ۵" in reply_texts(star_update)[0]
+    and bot.LOW_RATING_REASON_REQUEST_MESSAGE in reply_texts(star_update)[0],
     str(reply_texts(star_update)),
+)
+check(
+    "متن درخواست انتقاد/پیشنهاد همان متن خواسته‌شده است",
+    bot.LOW_RATING_REASON_REQUEST_MESSAGE
+    == "چنانچه انتقادی،پیشنهادی و یا فرمایشی دارید خوشحال میشیم بشنویم🙏🌹",
 )
 check(
     "دکمه بازگشت همراه درخواست دلیل ارسال شد",
@@ -594,15 +601,23 @@ complaint_texts = [
 ]
 check("پیام نارضایتی به گروه نارضایتی مشهد ارسال شد", len(complaint_texts) == 1)
 check(
-    "پیام نارضایتی شامل امتیاز و دلیل نارضایتی است",
+    "پیام نارضایتی شامل امتیاز، دلیل و شماره مشتری است",
     complaint_texts
     and "⭐ امتیاز: 2" in complaint_texts[0]
-    and REASON in complaint_texts[0],
+    and REASON in complaint_texts[0]
+    and f"📱 شماره: {PHONE_MASHHAD}" in complaint_texts[0],
     complaint_texts[0] if complaint_texts else "",
 )
 check(
-    "پیام تشکر از ثبت نظر برای مشتری ارسال شد",
-    any("با تشکر از شما" in text for text in reply_texts(reason_update)),
+    "پیام تشکر پایانی برای مشتری با متن خواسته‌شده ارسال شد",
+    bot.LOW_RATING_THANKS_MESSAGE in reply_texts(reason_update),
+    str(reply_texts(reason_update)),
+)
+check(
+    "متن تشکر پایانی دقیقاً همان متن خواسته‌شده است",
+    bot.LOW_RATING_THANKS_MESSAGE
+    == "حتما تمامی مواردی که فرمودین رو پیگیری میکنیم\n"
+    " ممنون از وقتی که گذاشتید و  امیدواریم مجددا توفیق میزبانی شمارو داشته باشیم و اینبار با رضایت کامل شما🙏💛",
 )
 check(
     "وضعیت نظرسنجی بعد از ثبت دلیل پاک شد",
