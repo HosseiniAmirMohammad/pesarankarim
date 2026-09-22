@@ -57,6 +57,7 @@ import traceback
 from datetime import datetime, timedelta, timezone
 from config import *
 
+
 # ===== نشان (NSHN) offer settings =====
 NSHN_MASHHAD = "https://nshn.ir/b7_b1iYzQJjehk"
 NSHN_TEHRAN = "https://nshn.ir/51_bvvEZexOWCR"
@@ -765,7 +766,7 @@ def nshn_offer_message(branch: str):
         "🎁 پیشنهاد ویژه!\n\n"
         "اگر تجربه‌تون رو در اپلیکیشن «نشان» (نشون) برای این شعبه ثبت کنید، ما به‌عنوان قدردانی "
         f"{NSHN_REWARD_POINTS} امتیاز هدیه خواهیم داد.\n\n"
-        "لطفا روی دکمه لینک زیر بزنید و نظرتون رو ثبت کنید؛ سپس پس از ۵ دقیقه دکمه «✅ نظر دادم نشان» "
+        "لطفا روی دکمه لینک زیر بزنید و نظرتون رو ثبت کنید؛ سپس پس از ۵ دقیقه دکمه «✅ نظر دادم نشان" "
         "برای دریافت امتیاز فعال می‌شود.\n\n"
         "از همراهی و حمایتشون بی‌نهایت سپاسگزاریم!🌸"
     )
@@ -785,9 +786,7 @@ async def send_nshn_offer(context, user_id, branch):
         kb = InlineKeyboardMarkup(
             [[InlineKeyboardButton("🔗 ثبت نظر در نشان", url=nshn_link)]]
         )
-        await context.bot.send_message(
-            chat_id=user_id, text=nshn_offer_message(branch), reply_markup=kb
-        )
+        await context.bot.send_message(chat_id=user_id, text=nshn_offer_message(branch), reply_markup=kb)
 
         async def delayed_claim():
             await asyncio.sleep(5 * 60)
@@ -807,6 +806,8 @@ async def send_nshn_offer(context, user_id, branch):
         asyncio.create_task(delayed_claim())
     except Exception as e:
         print(f"❌ خطا در ارسال پیشنهاد نشان: {e}")
+
+
 
 
 def low_rating_kb():
@@ -2019,19 +2020,13 @@ async def nshn_claim_button_handler(update: Update, context: ContextTypes.DEFAUL
             phone = get_last_request_phone(user_id)
         except Exception:
             phone = None
-        result = save_review_reward(
-            user_id=user_id, phone=phone, branch=branch, status="nshn"
-        )
+        result = save_review_reward(user_id=user_id, phone=phone, branch=branch, status="nshn")
         claims_count = result.get("claims_count") if result else None
     except Exception as e:
         print(f"❌ خطا در ثبت امتیاز نشان: {e}")
 
     try:
-        await context.bot.send_message(
-            chat_id=user_id,
-            text=NSHN_REWARD_CONGRATS_MESSAGE,
-            reply_markup=branch_menu_kb(branch, user_id),
-        )
+        await context.bot.send_message(chat_id=user_id, text=NSHN_REWARD_CONGRATS_MESSAGE, reply_markup=branch_menu_kb(branch, user_id))
     except Exception as e:
         print(f"❌ خطا در ارسال پیام تبریک نشان: {e}")
 
@@ -2156,8 +2151,8 @@ async def handle_star_selection(update: Update, context: ContextTypes.DEFAULT_TY
         reply_markup=ReplyKeyboardMarkup([[BTN_BACK]], resize_keyboard=True),
         parse_mode="Markdown",
     )
+        return
 
-    return
 
 
 async def survey_response_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3785,8 +3780,7 @@ def main():
     # دکمه کیبورد «✅ نظر دادم نشان» برای دریافت 50 امتیاز از نشان
     app.add_handler(
         MessageHandler(
-            filters.Regex(rf"^{re.escape(NSHN_BUTTON_TEXT)}$")
-            & filters.ChatType.PRIVATE,
+            filters.Regex(rf"^{re.escape(NSHN_BUTTON_TEXT)}$") & filters.ChatType.PRIVATE,
             nshn_claim_button_handler,
         )
     )
