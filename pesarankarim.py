@@ -1806,31 +1806,22 @@ async def back_to_menu_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def claim_reward_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """دکمه «✅ نظر دادم» بعد از ثبت نظر ۵ ستاره در گوگل مپ"""
-    print(
-        f"📍 [LOG] claim_reward_callback شروع شد | callback_data: {update.callback_query.data if update.callback_query else 'None'}"
-    )
     query = update.callback_query
     if query is None:
-        print(f"❌ [LOG] query is None، بازگشت")
         return
 
     raw_data = str(query.data or "").strip()
-    print(f"📍 [LOG] raw_data: {raw_data}")
     if not raw_data.startswith("claim_reward"):
-        print(f"❌ [LOG] raw_data شروع با claim_reward نیست، بازگشت")
         return
 
     user_id = query.from_user.id
     branch = "tehran" if "tehran" in raw_data else "mashhad"
-    print(f"📍 [LOG] user_id: {user_id}, branch: {branch}")
 
     # ۱) اعلان فوری به کاربر: «تبریک، شما ۱۰ امتیاز گرفتید!»
     try:
-        print(f"📍 [LOG] در حال ارسال query.answer...")
         await query.answer(f"🎉 تبریک! شما {REWARD_POINTS} امتیاز گرفتید")
-        print(f"✅ [LOG] query.answer ارسال شد")
     except Exception as e:
-        print(f"ℹ️ answer دکمه نظر دادم ممکن نشد: {e}")
+        print(f"❌ خطا در answer کردن دکمه: {e}")
 
     # ۲) حذف دکمه بعد از استفاده (تا امتیاز تکراری ثبت نشود)
     try:
@@ -1866,32 +1857,26 @@ async def claim_reward_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     # ۴) پیام تبریک + سپاسگزاری + منوی اصلی (حتماً ارسال می‌شود)
     try:
-        print(f"📍 [LOG] در حال ارسال پیام تبریک...")
         await context.bot.send_message(
             chat_id=user_id, text=reward_received_text(branch, claims_count)
         )
-        print(f"✅ [LOG] پیام تبریک ارسال شد")
     except Exception as e:
-        print(f"❌ [LOG] خطا در ارسال پیام تبریک: {e}\n{traceback.format_exc()}")
+        print(f"❌ خطا در ارسال پیام تبریک: {e}")
         return
 
     try:
-        print(f"📍 [LOG] در حال ارسال پیام سپاسگزاری...")
         await context.bot.send_message(chat_id=user_id, text=REWARD_THANKS_MESSAGE)
-        print(f"✅ [LOG] پیام سپاسگزاری ارسال شد")
     except Exception as e:
-        print(f"❌ [LOG] خطا در ارسال پیام سپاسگزاری: {e}\n{traceback.format_exc()}")
+        print(f"❌ خطا در ارسال پیام سپاسگزاری: {e}")
 
     try:
-        print(f"📍 [LOG] در حال ارسال منوی اصلی...")
         await context.bot.send_message(
             chat_id=user_id,
             text="لطفا یکی از گزینه‌های زیر را انتخاب کنید:",
             reply_markup=branch_menu_kb(branch, user_id),
         )
-        print(f"✅ [LOG] منوی اصلی ارسال شد")
     except Exception as e:
-        print(f"❌ [LOG] خطا در ارسال منوی اصلی: {e}\n{traceback.format_exc()}")
+        print(f"❌ خطا در ارسال منوی اصلی: {e}")
 
 
 def user_state(context, user_id):
@@ -3564,20 +3549,11 @@ async def handle_group_photo(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     """هندلر خطای سراسری برای ثبت و نمایش traceback کامل خطاها"""
-    print(f"{'🔴' * 50}")
-    print(f"❌ Exception جهانی رخ داد:")
-    print(f"update: {update}")
-    print(f"{'─' * 50}")
-    print(traceback.format_exc())
-    print(f"{'🔴' * 50}")
-
+    print(f"\n🔴❌ Exception جهانی رخ داد:")
+    print(f"  update type: {type(update).__name__ if update else 'None'}")
     if context.error:
-        print(f"context.error: {context.error}")
-        print(
-            traceback.print_exception(
-                type(context.error), context.error, context.error.__traceback__
-            )
-        )
+        print(f"  error: {context.error}")
+        print(f"  traceback:\n{traceback.format_exc()}")
 
 
 def main():
