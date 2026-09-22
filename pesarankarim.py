@@ -762,12 +762,10 @@ def nshn_link_for(branch: str):
 def nshn_offer_message(branch: str):
     """Compose the NSHN offer message (50 points incentive)."""
     return (
-        "🎁 پیشنهاد ویژه!\n\n"
-        "اگر تجربه‌تون رو در اپلیکیشن «نشان» (نشون) برای این شعبه ثبت کنید، ما به‌عنوان قدردانی "
-        f"{NSHN_REWARD_POINTS} امتیاز هدیه خواهیم داد.\n\n"
-        "لطفا روی دکمه لینک زیر بزنید و نظرتون رو ثبت کنید؛ سپس پس از ۵ دقیقه دکمه «✅ نظر دادم نشان» "
-        "برای دریافت امتیاز فعال می‌شود.\n\n"
-        "از همراهی و حمایتشون بی‌نهایت سپاسگزاریم!🌸"
+        "ضمن عرض تشکر و قدردانی از رضایت حضرتعالی، اگر نظر و تجربه ارزشمندتان را در اپلیکیشن «نشان» (نشون) برای این شعبه ثبت فرمایید، ما به‌عنوان قدردانی، "
+        f"{NSHN_REWARD_POINTS} امتیاز هدیه تقدیم خواهیم کرد.\n\n"
+        "لطفاً روی دکمه لینک زیر بزنید و نظرتون رو مرقوم فرمایید؛ سپس پس از ۵ دقیقه دکمه «✅ نظر دادم» جهت دریافت امتیاز فعال می‌گردد.\n\n"
+        "از همراهی و حمایت بی‌دریغتان بی‌نهایت سپاسگزاریم!🌸"
     )
 
 
@@ -920,16 +918,28 @@ async def send_review_gif(context, chat_id, branch):
 
 async def send_review_request_messages(context, chat_id, branch):
     """بعد از اعلام رضایت ۵ ستاره: پیام تشکر (بدون لینک و بدون دکمه) ← گیف ← دکمه «✅ نظر دادم»"""
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=GOOGLE_REVIEW_MESSAGE,
-    )
+    # send a short thank-you text with a Google link button, then gif, then schedule 5-minute claim keyboard
+    google_link = google_map_link(branch)
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 ثبت نظر در گوگل مپ", url=google_link)]])
+    await context.bot.send_message(chat_id=chat_id, text=GOOGLE_REVIEW_MESSAGE, reply_markup=kb)
     await send_review_gif(context, chat_id, branch)
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text="اگر نظر خود را بیان کردید روی دکمه زیر کلیک کنید:",
-        reply_markup=review_done_keyboard(branch),
-    )
+
+    async def delayed_google_claim():
+        await asyncio.sleep(5 * 60)
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="اگر در گوگل مپ نظر دادید دکمه را بزنید:",
+                reply_markup=ReplyKeyboardMarkup(
+                    [[KeyboardButton("✅ نظر دادم")]],
+                    resize_keyboard=True,
+                    one_time_keyboard=True,
+                ),
+            )
+        except Exception as e:
+            print(f"❌ خطا در ارسال دکمه نظر دادم گوگل: {e}")
+
+    asyncio.create_task(delayed_google_claim())
 
 
 def admin_panel_kb():
