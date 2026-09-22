@@ -3823,20 +3823,20 @@ def main():
         )
     )
 
+    # هندلر دکمه «📊 امتیاز من» (باید قبل از هندلر عمومی متون ثبت شود)
+    app.add_handler(
+        MessageHandler(
+            filters.Regex(r"^📊 امتیاز من$") & filters.ChatType.PRIVATE,
+            my_points_handler,
+        )
+    )
+
     # پیام‌های متنی فقط در چت خصوصی پردازش می‌شوند تا گروه‌ها پیام اضافه (مثل
     # «شما از کانال خارج شدید») دریافت نکنند
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
             handle_all_messages,
-        )
-    )
-
-    # هندلر دکمه «📊 امتیاز من»
-    app.add_handler(
-        MessageHandler(
-            filters.Regex(r"^📊 امتیاز من$") & filters.ChatType.PRIVATE,
-            my_points_handler,
         )
     )
 
