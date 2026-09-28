@@ -948,7 +948,8 @@ async def send_review_gif(context, chat_id, branch):
 
 
 async def send_review_request_messages(context, chat_id, branch):
-    """بعد از اعلام رضایت ۵ ستاره: پیام تشکر ← گیف ← راهنمای Open in + لینک ← پیام ۳۰ ثانیه ← (بعد از ۵ دقیقه) پیام و دکمه «ادامه»."""
+    """بعد از اعلام رضایت ۵ ستاره: پیام تشکر (بدون لینک و بدون دکمه) ← گیف ← دکمه «✅ نظر دادم»"""
+    # send a short thank-you text with a Google link button, then gif, then schedule 5-minute claim keyboard
     google_link = google_map_link(branch)
     kb = InlineKeyboardMarkup(
         [[InlineKeyboardButton("🔗 ثبت نظر در گوگل مپ", url=google_link)]]
@@ -958,29 +959,20 @@ async def send_review_request_messages(context, chat_id, branch):
     )
     await send_review_gif(context, chat_id, branch)
 
-    # راهنمای Open in + لینک
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=GOOGLE_OPEN_IN_GUIDE_MESSAGE.format(link=google_write_review_link(branch)),
-    )
-    # پیام «فقط ۳۰ ثانیه»
-    await context.bot.send_message(chat_id=chat_id, text=GOOGLE_THIRTY_SECONDS_MESSAGE)
-
     async def delayed_google_claim():
         await asyncio.sleep(5 * 60)
         try:
-            set_pending_claim(context, chat_id, "google")
             await context.bot.send_message(
                 chat_id=chat_id,
-                text=GOOGLE_CLAIM_PROMPT,
+                text="اگر در گوگل مپ نظر دادید دکمه را بزنید:",
                 reply_markup=ReplyKeyboardMarkup(
-                    [[KeyboardButton(CONTINUE_BUTTON_TEXT)]],
+                    [[KeyboardButton("✅ نظر دادم")]],
                     resize_keyboard=True,
                     one_time_keyboard=True,
                 ),
             )
         except Exception as e:
-            print(f"❌ خطا در ارسال دکمه ادامه گوگل: {e}")
+            print(f"❌ خطا در ارسال دکمه نظر دادم گوگل: {e}")
 
     asyncio.create_task(delayed_google_claim())
 
@@ -2049,7 +2041,7 @@ async def claim_reward_button_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ):
     """دکمه کیبورد «✅ نظر دادم» بعد از ثبت نظر ۵ ستاره در گوگل مپ"""
-    if update.message is None or update.message.text != CONTINUE_BUTTON_TEXT:
+    if update.message is None or update.message.text != "✅ نظر دادم":
         return
 
     user_id = update.effective_user.id
@@ -2146,31 +2138,6 @@ def set_pending_claim(context, user_id, value):
     state = user_state(context, user_id)
     if isinstance(state, dict):
         state["pending_claim"] = value
-
-
-async def continue_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """دکمه «ادامه» برای گوگل مپ و نشان؛ بر اساس مرحله فعلی کاربر"""
-    if update.message is None or update.message.text != CONTINUE_BUTTON_TEXT:
-        return
-
-    user_id = update.effective_user.id
-    state = user_state(context, user_id)
-    pending = state.get("pending_claim") if isinstance(state, dict) else None
-
-    if pending == "google":
-        if isinstance(state, dict):
-            state["pending_claim"] = None
-        await claim_reward_button_handler(update, context)
-    elif pending == "nshn":
-        if isinstance(state, dict):
-            state["pending_claim"] = None
-        await nshn_claim_button_handler(update, context)
-    else:
-        branch = context.user_data.get("branch", "mashhad")
-        await update.message.reply_text(
-            "🔙 به منوی اصلی بازگشتید.",
-            reply_markup=branch_menu_kb(branch, user_id),
-        )
 
 
 def user_state(context, user_id):
@@ -3912,12 +3879,20 @@ def main():
             )
         )
 
-    # دکمه کیبورد «ادامه» (مشترک بین گوگل مپ و نشان)
+    # دکمه کیبورد «✅ نظر دادم» برای دریافت امتیاز هدیه
     app.add_handler(
         MessageHandler(
-            filters.Regex(rf"^{re.escape(CONTINUE_BUTTON_TEXT)}$")
+            filters.Regex(r"^✅ نظر دادم$") & filters.ChatType.PRIVATE,
+            claim_reward_button_handler,
+        )
+    )
+
+    # دکمه کیبورد «✅ نظر دادم نشان» برای دریافت 50 امتیاز از نشان
+    app.add_handler(
+        MessageHandler(
+            filters.Regex(rf"^{re.escape(NSHN_BUTTON_TEXT)}$")
             & filters.ChatType.PRIVATE,
-            continue_button_handler,
+            nshn_claim_button_handler,
         )
     )
 

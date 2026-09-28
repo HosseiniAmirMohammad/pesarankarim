@@ -3912,12 +3912,20 @@ def main():
             )
         )
 
-    # دکمه کیبورد «ادامه» (مشترک بین گوگل مپ و نشان)
+    # دکمه کیبورد «✅ نظر دادم» برای دریافت امتیاز هدیه
     app.add_handler(
         MessageHandler(
-            filters.Regex(rf"^{re.escape(CONTINUE_BUTTON_TEXT)}$")
+            filters.Regex(r"^✅ نظر دادم$") & filters.ChatType.PRIVATE,
+            claim_reward_button_handler,
+        )
+    )
+
+    # دکمه کیبورد «✅ نظر دادم نشان» برای دریافت 50 امتیاز از نشان
+    app.add_handler(
+        MessageHandler(
+            filters.Regex(rf"^{re.escape(NSHN_BUTTON_TEXT)}$")
             & filters.ChatType.PRIVATE,
-            continue_button_handler,
+            nshn_claim_button_handler,
         )
     )
 

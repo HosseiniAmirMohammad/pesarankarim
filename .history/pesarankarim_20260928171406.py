@@ -2148,31 +2148,6 @@ def set_pending_claim(context, user_id, value):
         state["pending_claim"] = value
 
 
-async def continue_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """دکمه «ادامه» برای گوگل مپ و نشان؛ بر اساس مرحله فعلی کاربر"""
-    if update.message is None or update.message.text != CONTINUE_BUTTON_TEXT:
-        return
-
-    user_id = update.effective_user.id
-    state = user_state(context, user_id)
-    pending = state.get("pending_claim") if isinstance(state, dict) else None
-
-    if pending == "google":
-        if isinstance(state, dict):
-            state["pending_claim"] = None
-        await claim_reward_button_handler(update, context)
-    elif pending == "nshn":
-        if isinstance(state, dict):
-            state["pending_claim"] = None
-        await nshn_claim_button_handler(update, context)
-    else:
-        branch = context.user_data.get("branch", "mashhad")
-        await update.message.reply_text(
-            "🔙 به منوی اصلی بازگشتید.",
-            reply_markup=branch_menu_kb(branch, user_id),
-        )
-
-
 def user_state(context, user_id):
     """دسترسی به وضعیت (user_data) یک کاربر مشخص
 
@@ -3912,12 +3887,20 @@ def main():
             )
         )
 
-    # دکمه کیبورد «ادامه» (مشترک بین گوگل مپ و نشان)
+    # دکمه کیبورد «✅ نظر دادم» برای دریافت امتیاز هدیه
     app.add_handler(
         MessageHandler(
-            filters.Regex(rf"^{re.escape(CONTINUE_BUTTON_TEXT)}$")
+            filters.Regex(r"^✅ نظر دادم$") & filters.ChatType.PRIVATE,
+            claim_reward_button_handler,
+        )
+    )
+
+    # دکمه کیبورد «✅ نظر دادم نشان» برای دریافت 50 امتیاز از نشان
+    app.add_handler(
+        MessageHandler(
+            filters.Regex(rf"^{re.escape(NSHN_BUTTON_TEXT)}$")
             & filters.ChatType.PRIVATE,
-            continue_button_handler,
+            nshn_claim_button_handler,
         )
     )
 
