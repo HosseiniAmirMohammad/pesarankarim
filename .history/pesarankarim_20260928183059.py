@@ -954,6 +954,12 @@ async def send_review_request_messages(context, chat_id, branch):
     # پیام «فقط ۳۰ ثانیه» — بلافاصله بعد از گیف
     await context.bot.send_message(chat_id=chat_id, text=GOOGLE_THIRTY_SECONDS_MESSAGE)
 
+    # راهنمای Open in + لینک
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=GOOGLE_OPEN_IN_GUIDE_MESSAGE.format(link=google_write_review_link(branch)),
+    )
+
     async def delayed_google_claim():
         await asyncio.sleep(5 * 60)
         try:
