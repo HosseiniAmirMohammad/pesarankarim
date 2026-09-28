@@ -60,7 +60,7 @@ from config import *
 
 # ===== نشان (NSHN) offer settings =====
 NSHN_MASHHAD = "https://neshan.org/maps/add-review/b7b03632c59fce465cbf2a48d445ec59#c36.340-59.588-18z-0p"
-NSHN_TEHRAN = "https://neshan.org/maps/add-review/51f9f83fc9a1b7eb4faff5a06180484c"
+NSHN_TEHRAN = "https://nshn.ir/51_bvvEZexOWCR"
 NSHN_REWARD_POINTS = 50
 NSHN_BUTTON_TEXT = "ادامه"
 CONTINUE_BUTTON_TEXT = "ادامه"
