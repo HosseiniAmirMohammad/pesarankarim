@@ -1410,6 +1410,81 @@ def get_user_points_breakdown(user_id):
         return {"google_claims": 0, "nshn_claims": 0, "total": 0}
 
 
+def reconcile_review_rewards_from_logs():
+    """Backfill review reward rows for users whose claim was logged but not saved.
+
+    This fixes past cases where a user pressed «ادامه» and the action was recorded
+    in usage_logs, but due to an earlier state bug the review_rewards row was never
+    created. We reconstruct the missing rows from the reward logs.
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute("""
+            SELECT user_id, action, detail
+            FROM usage_logs
+            WHERE action LIKE '%امتیاز هدیه%'
+               OR action LIKE '%دریافت % امتیاز%'
+               OR action LIKE '%دریافت%امتیاز%'
+            ORDER BY created_at DESC
+            """)
+        rows = c.fetchall()
+        inserted = 0
+        for user_id, action, detail in rows:
+            if not user_id:
+                continue
+            normalized = str(action or "")
+            detail_text = str(detail or "")
+            if (
+                "۵۰" in normalized
+                or "50" in normalized
+                or "نشان" in detail_text
+                or "نشان" in normalized
+            ):
+                status = "nshn"
+                points = 50
+            elif (
+                "۱۰" in normalized
+                or "10" in normalized
+                or "گوگل" in detail_text
+                or "گوگل" in normalized
+            ):
+                status = "claimed"
+                points = 10
+            else:
+                continue
+
+            c.execute(
+                "SELECT 1 FROM review_rewards WHERE user_id = ? AND status = ? LIMIT 1",
+                (user_id, status),
+            )
+            if c.fetchone():
+                continue
+
+            branch = (
+                "tehran"
+                if "تهران" in detail_text or "tehran" in detail_text.lower()
+                else "mashhad"
+            )
+            c.execute(
+                """
+                INSERT INTO review_rewards (user_id, phone, branch, status, claimed_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                (user_id, None, branch, status),
+            )
+            inserted += 1
+
+        conn.commit()
+        return {"inserted": inserted}
+    except Exception as e:
+        print(f"❌ خطا در هم‌ترازی امتیازهای قبلی: {e}")
+        conn.rollback()
+        return {"inserted": 0, "error": str(e)}
+    finally:
+        conn.close()
+
+
 def get_review_rewards_count(branch=None):
     """تعداد کل اعلام‌های دریافت امتیاز"""
     conn = get_db_connection()

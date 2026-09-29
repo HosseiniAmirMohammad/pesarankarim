@@ -3,6 +3,11 @@ from datetime import datetime, timedelta
 import os
 import re
 
+try:
+    from config import SUPER_ADMIN_IDS
+except Exception:  # اگر config در دسترس نبود، حداقل‌های امن استفاده می‌شود
+    SUPER_ADMIN_IDS = ()
+
 DB_PATH = os.path.join(os.path.dirname(__file__), "pesarankarim.db")
 
 
@@ -180,6 +185,54 @@ def init_db():
         FOREIGN KEY (blocked_by) REFERENCES admins(user_id)
     )""")
 
+    # ===== ۹. جدول کاربران ربات (تاریخ عضویت در ربات) =====
+    # اولین باری که کاربر ربات را استفاده کند، به عنوان عضو ربات با تاریخ عضویت ثبت می‌شود
+    c.execute("""CREATE TABLE IF NOT EXISTS users (
+        user_id INTEGER PRIMARY KEY,
+        username TEXT,
+        first_name TEXT,
+        last_name TEXT,
+        joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        usage_count INTEGER DEFAULT 0
+    )""")
+
+    # ===== ۱۰. جدول لاگ استفاده از ربات =====
+    # هر بار استفاده کاربر از ربات (فشردن دکمه‌ها، ثبت درخواست، نظرسنجی و ...) در این جدول ثبت می‌شود
+    c.execute("""CREATE TABLE IF NOT EXISTS usage_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        username TEXT,
+        first_name TEXT,
+        action TEXT,
+        detail TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )""")
+
+    # ===== ۱۱. جدول دریافت امتیاز نظرسنجی (نظر ۵ ستاره در گوگل مپ) =====
+    # وقتی مشتری روی دکمه «دریافت امتیاز» می‌زند، در این جدول ثبت می‌شود تا
+    # مدیر بتواند بررسی و تایید کند که نظر ۵ ستاره واقعا ثبت شده است.
+    c.execute("""CREATE TABLE IF NOT EXISTS review_rewards (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        phone TEXT,
+        branch TEXT DEFAULT 'mashhad',
+        status TEXT DEFAULT 'claimed',
+        claimed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )""")
+
+    # ===== ۱۲. جدول گیف/ویدیوی نظرسنجی هر شعبه =====
+    # گیفی که بعد از اعلام رضایت ۵ ستاره برای مشتری فرستاده می‌شود. مدیر می‌تواند آن
+    # را از پنل مدیریت (بخش «🎬 گیف نظرسنجی») ثبت یا تغییر دهد؛ اگر چیزی ثبت نشده
+    # باشد، پیام گیف گروه لیست انتظار همان شعبه برای مشتری کپی می‌شود.
+    c.execute("""CREATE TABLE IF NOT EXISTS review_gifs (
+        branch TEXT PRIMARY KEY,
+        file_id TEXT NOT NULL,
+        file_type TEXT DEFAULT 'animation',
+        caption TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )""")
+
     # ایجاد ایندکس‌ها برای سرعت بیشتر
     c.execute(
         "CREATE INDEX IF NOT EXISTS idx_photo_requests_user_id ON photo_requests(user_id)"
@@ -214,6 +267,49 @@ def init_db():
     c.execute(
         "CREATE INDEX IF NOT EXISTS idx_preuploaded_photos_used ON preuploaded_photos(used)"
     )
+    c.execute("CREATE INDEX IF NOT EXISTS idx_users_joined_at ON users(joined_at)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_users_last_seen ON users(last_seen)")
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_usage_logs_user_id ON usage_logs(user_id)"
+    )
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_usage_logs_created_at ON usage_logs(created_at)"
+    )
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_review_rewards_user_id ON review_rewards(user_id)"
+    )
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_review_rewards_claimed_at ON review_rewards(claimed_at)"
+    )
+
+    # ===== پر کردن جدول کاربران از داده‌های قبلی ربات =====
+    # فقط زمانی اجرا می‌شود که جدول کاربران خالی باشد (یعنی یک‌بار بعد از این بروزرسانی).
+    # تاریخ عضویت این کاربران دقیق نیست و با اولین فعالیت ثبت‌شده‌شان تقریب زده می‌شود.
+    c.execute("SELECT COUNT(*) FROM users")
+    if c.fetchone()[0] == 0:
+        for source_table in ("photo_requests", "surveys"):
+            c.execute(f"""
+                INSERT OR IGNORE INTO users (user_id, joined_at, last_seen)
+                SELECT user_id, MIN(created_at), MAX(created_at)
+                FROM {source_table}
+                WHERE created_at IS NOT NULL
+                GROUP BY user_id
+            """)
+
+    # ===== اطمینان از دسترسی کامل سازنده/مالک ربات =====
+    # این آیدی‌ها همیشه در لیست ادمین‌ها فعال نگه داشته می‌شوند
+    for super_admin_id in SUPER_ADMIN_IDS:
+        c.execute(
+            """
+            INSERT OR IGNORE INTO admins (user_id, added_by, is_active)
+            VALUES (?, ?, 1)
+        """,
+            (super_admin_id, super_admin_id),
+        )
+        c.execute(
+            "UPDATE admins SET is_active = 1 WHERE user_id = ?",
+            (super_admin_id,),
+        )
 
     conn.commit()
     conn.close()
@@ -250,6 +346,10 @@ def add_admin(user_id, username=None, first_name=None, last_name=None, added_by=
 
 
 def remove_admin(user_id):
+    # سازنده/مالک ربات قابل حذف شدن نیست
+    if is_super_admin(user_id):
+        return False
+
     conn = get_db_connection()
     c = conn.cursor()
     try:
@@ -265,6 +365,10 @@ def remove_admin(user_id):
 
 def delete_admin_permanently(user_id):
     """حذف کامل ادمین از دیتابیس"""
+    # سازنده/مالک ربات قابل حذف شدن نیست
+    if is_super_admin(user_id):
+        return False
+
     conn = get_db_connection()
     c = conn.cursor()
     try:
@@ -278,7 +382,19 @@ def delete_admin_permanently(user_id):
         conn.close()
 
 
+def is_super_admin(user_id):
+    """بررسی اینکه کاربر سازنده/مالک ربات است یا نه (دسترسی کامل و همیشگی)"""
+    try:
+        return int(user_id) in SUPER_ADMIN_IDS
+    except (TypeError, ValueError):
+        return False
+
+
 def is_admin(user_id):
+    # سازنده/مالک ربات همیشه دسترسی کامل دارد، حتی اگر از دیتابیس حذف شود
+    if is_super_admin(user_id):
+        return True
+
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
@@ -361,23 +477,6 @@ def update_admin_login(user_id):
         return False
     finally:
         conn.close()
-
-
-def is_super_admin(user_id):
-    """بررسی سوپر ادمین بودن (اولین ادمین)"""
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute(
-        """
-        SELECT user_id FROM admins 
-        WHERE user_id = ? AND is_active = 1 
-        ORDER BY added_at ASC LIMIT 1
-    """,
-        (user_id,),
-    )
-    result = c.fetchone()
-    conn.close()
-    return result is not None
 
 
 # ===== توابع عکس‌های پیش‌آپلود شده =====
@@ -548,23 +647,55 @@ def unblock_user(user_id):
 
 
 # ===== توابع درخواست عکس =====
-def save_photo_request(user_id, phone, photo_code, photo_date, branch):
-    """ذخیره درخواست عکس جدید با شعبه"""
+def save_photo_request(
+    user_id, phone, photo_code, photo_date, branch, status="pending"
+):
+    """ذخیره درخواست عکس جدید با شعبه
+
+    اگر status = 'sent' باشد یعنی عکس مشتری از قبل آپلود شده بوده و به‌صورت
+    خودکار برای او ارسال شده است؛ در این حالت این درخواست در لیست انتظار
+    گروه‌های شعبه نمایش داده نمی‌شود.
+    """
+    status = "sent" if str(status).lower() == "sent" else "pending"
+
     conn = get_db_connection()
     c = conn.cursor()
     try:
         c.execute(
             """
-            INSERT INTO photo_requests (user_id, phone, photo_code, photo_date, branch, status, created_at)
-            VALUES (?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP)
+            INSERT INTO photo_requests (user_id, phone, photo_code, photo_date, branch, status, created_at, sent_at)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP,
+                    CASE WHEN ? = 'sent' THEN CURRENT_TIMESTAMP ELSE NULL END)
         """,
-            (user_id, phone, photo_code, photo_date, branch),
+            (user_id, phone, photo_code, photo_date, branch, status, status),
         )
         conn.commit()
         return c.lastrowid
     except Exception as e:
         print(f"❌ خطا در ذخیره درخواست: {e}")
         return None
+    finally:
+        conn.close()
+
+
+def mark_request_as_sent(phone, photo_code, branch):
+    """علامت‌گذاری درخواست در انتظار به عنوان ارسال‌شده (بعد از ارسال عکس)"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute(
+            """
+            UPDATE photo_requests
+            SET status = 'sent', sent_at = CURRENT_TIMESTAMP, failed_reason = NULL
+            WHERE phone = ? AND photo_code = ? AND branch = ? AND status = 'pending'
+        """,
+            (phone, photo_code, branch),
+        )
+        conn.commit()
+        return c.rowcount
+    except Exception as e:
+        print(f"❌ خطا در بروزرسانی وضعیت درخواست: {e}")
+        return 0
     finally:
         conn.close()
 
@@ -892,7 +1023,7 @@ def get_pending_requests(branch=None):
         c.execute(
             """
             SELECT id, phone, photo_code, photo_date, created_at,
-                   (strftime('%s', 'now') - strftime('%s', created_at)) / 3600 as hours
+                   ((strftime('%s', 'now', '+3 hours', '+30 minutes') - strftime('%s', created_at)) / 3600) as hours
             FROM photo_requests 
             WHERE status = 'pending' AND branch = ?
             ORDER BY created_at ASC
@@ -902,7 +1033,7 @@ def get_pending_requests(branch=None):
     else:
         c.execute("""
             SELECT id, phone, photo_code, photo_date, created_at,
-                   (strftime('%s', 'now') - strftime('%s', created_at)) / 3600 as hours
+                   ((strftime('%s', 'now', '+3 hours', '+30 minutes') - strftime('%s', created_at)) / 3600) as hours
             FROM photo_requests 
             WHERE status = 'pending'
             ORDER BY created_at ASC
@@ -910,6 +1041,33 @@ def get_pending_requests(branch=None):
     result = c.fetchall()
     conn.close()
     return result
+
+
+def get_pending_requests_with_users(branch=None):
+    """دریافت درخواست‌های در انتظار همراه با اطلاعات کاربر و مدت انتظار (ساعت)
+
+    برای ارسال لیست کاربران منتظر دریافت عکس به گروه لیست انتظار استفاده می‌شود.
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    base_query = """
+        SELECT pr.id, pr.user_id, pr.phone, pr.photo_code, pr.photo_date, pr.branch,
+               pr.created_at,
+               u.first_name, u.username, u.joined_at,
+               ((strftime('%s', 'now', '+3 hours', '+30 minutes') - strftime('%s', pr.created_at)) / 3600) AS hours
+        FROM photo_requests pr
+        LEFT JOIN users u ON u.user_id = pr.user_id
+        WHERE pr.status = 'pending'
+    """
+    if branch:
+        c.execute(
+            base_query + " AND pr.branch = ? ORDER BY pr.created_at ASC", (branch,)
+        )
+    else:
+        c.execute(base_query + " ORDER BY pr.created_at ASC")
+    result = c.fetchall()
+    conn.close()
+    return [dict(row) for row in result]
 
 
 def get_failed_requests(branch=None):
@@ -952,6 +1110,623 @@ def get_preuploaded_photo_count(branch=None):
     result = c.fetchone()[0]
     conn.close()
     return result
+
+
+# ===== توابع لاگ کاربران ربات =====
+# زمان‌ها در دیتابیس به وقت UTC ذخیره می‌شوند؛ برای مقایسه تاریخ «امروز» به وقت ایران
+# (UTC+3:30) از این مودیفایرها استفاده می‌شود.
+IRAN_TZ_SQL = "'+3 hours', '+30 minutes'"
+
+
+def _iran_today_condition(column_name):
+    """شرط SQL برای بررسی اینکه یک ستون زمانی مربوط به امروز (به وقت ایران) است یا نه"""
+    return f"date({column_name}, {IRAN_TZ_SQL}) = date('now', {IRAN_TZ_SQL})"
+
+
+def _clean_user_field(value):
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _upsert_user(cursor, user_id, username, first_name, last_name):
+    """ثبت کاربر جدید (همراه تاریخ عضویت) یا بروزرسانی اطلاعات کاربر موجود"""
+    cursor.execute(
+        """
+        INSERT OR IGNORE INTO users (user_id, username, first_name, last_name, joined_at, last_seen, usage_count)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0)
+    """,
+        (user_id, username, first_name, last_name),
+    )
+    cursor.execute(
+        """
+        UPDATE users
+        SET username = COALESCE(?, username),
+            first_name = COALESCE(?, first_name),
+            last_name = COALESCE(?, last_name),
+            last_seen = CURRENT_TIMESTAMP
+        WHERE user_id = ?
+    """,
+        (username, first_name, last_name, user_id),
+    )
+
+
+def register_user(user_id, username=None, first_name=None, last_name=None):
+    """ثبت کاربر در جدول کاربران ربات
+
+    اولین باری که کاربر با ربات کار کند، تاریخ عضویت او ثبت می‌شود و در
+    استفاده‌های بعدی فقط اطلاعات و آخرین فعالیتش به‌روز می‌شود.
+    """
+    if user_id is None:
+        return None
+
+    username = _clean_user_field(username)
+    first_name = _clean_user_field(first_name)
+    last_name = _clean_user_field(last_name)
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        _upsert_user(c, user_id, username, first_name, last_name)
+        conn.commit()
+        c.execute(
+            """
+            SELECT user_id, username, first_name, last_name, joined_at, last_seen, usage_count
+            FROM users WHERE user_id = ?
+        """,
+            (user_id,),
+        )
+        row = c.fetchone()
+        return dict(row) if row else None
+    except Exception as e:
+        print(f"❌ خطا در ثبت کاربر ربات: {e}")
+        return None
+    finally:
+        conn.close()
+
+
+def log_bot_usage(
+    user_id, action, detail=None, username=None, first_name=None, last_name=None
+):
+    """ثبت یک استفاده از ربات همراه با تاریخ عضویت کاربر
+
+    اگر کاربر برای اولین بار باشد، ابتدا در جدول کاربران ثبت می‌شود و بعد
+    لاگ استفاده از ربات برایش درج می‌گردد.
+    """
+    if user_id is None:
+        return False
+
+    username = _clean_user_field(username)
+    first_name = _clean_user_field(first_name)
+    last_name = _clean_user_field(last_name)
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        # ثبت کاربر در اولین استفاده (تاریخ عضویت) و بروزرسانی اطلاعاتش
+        _upsert_user(c, user_id, username, first_name, last_name)
+        c.execute(
+            """
+            UPDATE users
+            SET usage_count = COALESCE(usage_count, 0) + 1,
+                last_seen = CURRENT_TIMESTAMP
+            WHERE user_id = ?
+        """,
+            (user_id,),
+        )
+        c.execute(
+            """
+            INSERT INTO usage_logs (user_id, username, first_name, action, detail, created_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """,
+            (
+                user_id,
+                username,
+                first_name,
+                _clean_user_field(action) or "نامشخص",
+                _clean_user_field(detail),
+            ),
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"❌ خطا در ثبت لاگ استفاده از ربات: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def update_survey_comment(survey_id, comment):
+    """ثبت/بروزرسانی دلیل نارضایتی روی همان رکورد نظرسنجی (جلوگیری از رکورد تکراری)"""
+    if not survey_id:
+        return False
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute("UPDATE surveys SET comment = ? WHERE id = ?", (comment, survey_id))
+        conn.commit()
+        return c.rowcount > 0
+    except Exception as e:
+        print(f"❌ خطا در بروزرسانی دلیل نارضایتی: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def get_last_request_phone(user_id):
+    """شماره تلفن آخرین درخواست عکس کاربر (برای ثبت امتیاز نظرسنجی)"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT phone FROM photo_requests
+        WHERE user_id = ?
+        ORDER BY created_at DESC, id DESC LIMIT 1
+    """,
+        (user_id,),
+    )
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+# ===== توابع دریافت امتیاز نظرسنجی (نظر ۵ ستاره در گوگل مپ) =====
+def save_review_reward(user_id, phone=None, branch="mashhad", status="claimed"):
+    """ثبت دریافت امتیاز توسط کاربر؛ خروجی شامل تعداد کل اعلام‌های این کاربر است"""
+    if user_id is None:
+        return None
+
+    branch = "tehran" if str(branch).strip().lower() == "tehran" else "mashhad"
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute(
+            """
+            INSERT INTO review_rewards (user_id, phone, branch, status, claimed_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """,
+            (user_id, _clean_user_field(phone), branch, status or "claimed"),
+        )
+        reward_id = c.lastrowid
+        c.execute(
+            "SELECT COUNT(*) FROM review_rewards WHERE user_id = ? AND branch = ?",
+            (user_id, branch),
+        )
+        claims_count = c.fetchone()[0]
+        conn.commit()
+        return {"id": reward_id, "claims_count": claims_count}
+    except Exception as e:
+        print(f"❌ خطا در ثبت دریافت امتیاز: {e}")
+        return None
+    finally:
+        conn.close()
+
+
+def get_review_rewards(limit=10, offset=0, branch=None):
+    """لیست اعلام‌های دریافت امتیاز همراه با اطلاعات کاربر"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    base_query = """
+        SELECT r.id, r.user_id, r.phone, r.branch, r.status, r.claimed_at,
+               u.first_name, u.username, u.joined_at
+        FROM review_rewards r
+        LEFT JOIN users u ON u.user_id = r.user_id
+    """
+    c.execute(base_query + " ORDER BY r.id DESC LIMIT ? OFFSET ?", (limit, offset))
+    result = c.fetchall()
+    conn.close()
+    return [dict(row) for row in result]
+
+
+def get_user_points(user_id):
+    """Calculate a user's points total based on review_rewards table.
+
+    Currently: each 'claimed' or 'nshn' status maps to points defined
+    externally (10 for REWARD_POINTS, 50 for NSHN_REWARD_POINTS). This
+    function returns the total points credited by counting records and
+    multiplying by expected values.
+    """
+    if not user_id:
+        return 0
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        # count google (default) claims
+        c.execute(
+            "SELECT COUNT(*) FROM review_rewards WHERE user_id = ? AND status = 'claimed'",
+            (user_id,),
+        )
+        google_claims = c.fetchone()[0]
+        # count nshn claims
+        c.execute(
+            "SELECT COUNT(*) FROM review_rewards WHERE user_id = ? AND status = 'nshn'",
+            (user_id,),
+        )
+        nshn_claims = c.fetchone()[0]
+        conn.close()
+        # constants are imported in the main module; keep defaults here
+        try:
+            from config import REWARD_POINTS, NSHN_REWARD_POINTS
+
+            return google_claims * int(REWARD_POINTS) + nshn_claims * int(
+                NSHN_REWARD_POINTS
+            )
+        except Exception:
+            return google_claims * 10 + nshn_claims * 50
+    except Exception as e:
+        print(f"❌ خطا در محاسبه امتیاز کاربر: {e}")
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return 0
+
+
+def get_user_points_breakdown(user_id):
+    """Return a breakdown of claims and total points for a user.
+
+    Returns dict: {"google_claims": int, "nshn_claims": int, "total": int}
+    """
+    if not user_id:
+        return {"google_claims": 0, "nshn_claims": 0, "total": 0}
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute(
+            "SELECT COUNT(*) FROM review_rewards WHERE user_id = ? AND status = 'claimed'",
+            (user_id,),
+        )
+        google_claims = c.fetchone()[0]
+        c.execute(
+            "SELECT COUNT(*) FROM review_rewards WHERE user_id = ? AND status = 'nshn'",
+            (user_id,),
+        )
+        nshn_claims = c.fetchone()[0]
+        conn.close()
+        try:
+            from config import REWARD_POINTS, NSHN_REWARD_POINTS
+
+            total = google_claims * int(REWARD_POINTS) + nshn_claims * int(
+                NSHN_REWARD_POINTS
+            )
+        except Exception:
+            total = google_claims * 10 + nshn_claims * 50
+        return {
+            "google_claims": google_claims,
+            "nshn_claims": nshn_claims,
+            "total": total,
+        }
+    except Exception as e:
+        print(f"❌ خطا در محاسبه‌ی جزئیات امتیاز کاربر: {e}")
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return {"google_claims": 0, "nshn_claims": 0, "total": 0}
+
+
+def reconcile_review_rewards_from_logs():
+    """Backfill review reward rows for users whose claim was logged but not saved.
+
+    This fixes past cases where a user pressed «ادامه» and the action was recorded
+    in usage_logs, but due to an earlier state bug the review_rewards row was never
+    created. We reconstruct the missing rows from the reward logs.
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute("""
+            SELECT user_id, action, detail
+            FROM usage_logs
+            WHERE action LIKE '%امتیاز هدیه%'
+               OR action LIKE '%دریافت % امتیاز%'
+               OR action LIKE '%دریافت%امتیاز%'
+            ORDER BY created_at DESC
+            """)
+        rows = c.fetchall()
+        inserted = 0
+        for user_id, action, detail in rows:
+            if not user_id:
+                continue
+            normalized = str(action or "")
+            detail_text = str(detail or "")
+            if (
+                "۵۰" in normalized
+                or "50" in normalized
+                or "نشان" in detail_text
+                or "نشان" in normalized
+            ):
+                status = "nshn"
+                points = 50
+            elif (
+                "۱۰" in normalized
+                or "10" in normalized
+                or "گوگل" in detail_text
+                or "گوگل" in normalized
+            ):
+                status = "claimed"
+                points = 10
+            else:
+                continue
+
+            c.execute(
+                "SELECT 1 FROM review_rewards WHERE user_id = ? AND status = ? LIMIT 1",
+                (user_id, status),
+            )
+            if c.fetchone():
+                continue
+
+            branch = (
+                "tehran"
+                if "تهران" in detail_text or "tehran" in detail_text.lower()
+                else "mashhad"
+            )
+            c.execute(
+                """
+                INSERT INTO review_rewards (user_id, phone, branch, status, claimed_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                (user_id, None, branch, status),
+            )
+            inserted += 1
+
+        conn.commit()
+        return {"inserted": inserted}
+    except Exception as e:
+        print(f"❌ خطا در هم‌ترازی امتیازهای قبلی: {e}")
+        conn.rollback()
+        return {"inserted": 0, "error": str(e)}
+    finally:
+        conn.close()
+
+
+def get_review_rewards_count(branch=None):
+    """تعداد کل اعلام‌های دریافت امتیاز"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    if branch:
+        c.execute("SELECT COUNT(*) FROM review_rewards WHERE branch = ?", (branch,))
+    else:
+        c.execute("SELECT COUNT(*) FROM review_rewards")
+    total = c.fetchone()[0]
+    conn.close()
+    return total
+
+
+def normalize_branch(branch):
+    """نرمال‌سازی نام شعبه (فقط مشهد یا تهران)"""
+    return "tehran" if str(branch).strip().lower() == "tehran" else "mashhad"
+
+
+def get_review_rewards_stats():
+    """آمار اعلام‌های دریافت امتیاز (روز جاری به وقت ایران)"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    stats = {}
+
+    c.execute("SELECT COUNT(*) FROM review_rewards")
+    stats["total_claims"] = c.fetchone()[0]
+
+    c.execute(
+        f"SELECT COUNT(*) FROM review_rewards WHERE {_iran_today_condition('claimed_at')}"
+    )
+    stats["claims_today"] = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(DISTINCT user_id) FROM review_rewards")
+    stats["unique_users"] = c.fetchone()[0]
+
+    conn.close()
+    return stats
+
+
+# ===== توابع گیف نظرسنجی (پیام گیف بعد از اعلام رضایت ۵ ستاره) =====
+def save_review_gif(branch, file_id, file_type="animation", caption=None):
+    """ثبت/بروزرسانی گیف نظرسنجی یک شعبه (با file_id ارسالی ادمین)"""
+    if not file_id:
+        return False
+
+    branch = normalize_branch(branch)
+    file_type = (file_type or "animation").strip().lower()
+    if file_type not in ("animation", "video", "document"):
+        file_type = "animation"
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute(
+            """
+            INSERT INTO review_gifs (branch, file_id, file_type, caption, updated_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(branch) DO UPDATE SET
+                file_id = excluded.file_id,
+                file_type = excluded.file_type,
+                caption = excluded.caption,
+                updated_at = CURRENT_TIMESTAMP
+        """,
+            (branch, file_id, file_type, _clean_user_field(caption)),
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"❌ خطا در ثبت گیف نظرسنجی: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def get_review_gif(branch):
+    """گیف ثبت‌شده یک شعبه (None اگر ثبت نشده باشد)"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT file_id, file_type, caption FROM review_gifs WHERE branch = ?",
+        (normalize_branch(branch),),
+    )
+    row = c.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def clear_review_gif(branch):
+    """حذف گیف ثبت‌شده یک شعبه"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute(
+            "DELETE FROM review_gifs WHERE branch = ?", (normalize_branch(branch),)
+        )
+        conn.commit()
+        return c.rowcount > 0
+    except Exception as e:
+        print(f"❌ خطا در حذف گیف نظرسنجی: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def get_user_record(user_id):
+    """دریافت اطلاعات ثبت‌شده یک کاربر ربات (شامل تاریخ عضویت)"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT user_id, username, first_name, last_name, joined_at, last_seen, usage_count
+        FROM users WHERE user_id = ?
+    """,
+        (user_id,),
+    )
+    row = c.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_users_count():
+    """تعداد کل کاربرانی که ربات را استفاده کرده‌اند"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM users")
+    total = c.fetchone()[0]
+    conn.close()
+    return total
+
+
+def get_users_log(limit=10, offset=0):
+    """لیست کاربران ربات همراه با تاریخ عضویت، آخرین فعالیت و تعداد استفاده"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT u.user_id, u.username, u.first_name, u.last_name, u.joined_at, u.last_seen,
+               COALESCE(u.usage_count, 0) AS usage_count,
+               (SELECT COUNT(*) FROM photo_requests pr WHERE pr.user_id = u.user_id) AS requests_count,
+               (SELECT COUNT(*) FROM surveys s WHERE s.user_id = u.user_id) AS surveys_count
+        FROM users u
+        ORDER BY u.joined_at DESC, u.user_id DESC
+        LIMIT ? OFFSET ?
+    """,
+        (limit, offset),
+    )
+    result = c.fetchall()
+    conn.close()
+    return [dict(row) for row in result]
+
+
+def get_usage_logs_count(user_id=None):
+    """تعداد کل رکوردهای لاگ استفاده از ربات"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    if user_id is None:
+        c.execute("SELECT COUNT(*) FROM usage_logs")
+    else:
+        c.execute("SELECT COUNT(*) FROM usage_logs WHERE user_id = ?", (user_id,))
+    total = c.fetchone()[0]
+    conn.close()
+    return total
+
+
+def get_usage_logs(limit=10, offset=0, user_id=None):
+    """آخرین استفاده‌های انجام‌شده از ربات همراه با تاریخ عضویت کاربر"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    base_query = """
+        SELECT l.id, l.user_id,
+               COALESCE(l.username, u.username) AS username,
+               COALESCE(l.first_name, u.first_name) AS first_name,
+               l.action, l.detail, l.created_at,
+               u.joined_at, COALESCE(u.usage_count, 0) AS usage_count
+        FROM usage_logs l
+        LEFT JOIN users u ON u.user_id = l.user_id
+    """
+    if user_id is None:
+        c.execute(
+            base_query + " ORDER BY l.id DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        )
+    else:
+        c.execute(
+            base_query + " WHERE l.user_id = ? ORDER BY l.id DESC LIMIT ? OFFSET ?",
+            (user_id, limit, offset),
+        )
+    result = c.fetchall()
+    conn.close()
+    return [dict(row) for row in result]
+
+
+def get_users_stats():
+    """آمار کاربران ربات و لاگ استفاده از آن (روز جاری به وقت ایران)"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    stats = {}
+
+    c.execute("SELECT COUNT(*) FROM users")
+    stats["total_users"] = c.fetchone()[0]
+
+    c.execute(f"SELECT COUNT(*) FROM users WHERE {_iran_today_condition('joined_at')}")
+    stats["new_users_today"] = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM usage_logs")
+    stats["total_usage"] = c.fetchone()[0]
+
+    c.execute(
+        f"SELECT COUNT(*) FROM usage_logs WHERE {_iran_today_condition('created_at')}"
+    )
+    stats["usage_today"] = c.fetchone()[0]
+
+    c.execute(
+        f"SELECT COUNT(DISTINCT user_id) FROM usage_logs WHERE {_iran_today_condition('created_at')}"
+    )
+    stats["active_users_today"] = c.fetchone()[0]
+
+    conn.close()
+    return stats
+
+
+def delete_old_usage_logs(days=180):
+    """حذف لاگ‌های قدیمی‌تر از تعداد روز مشخص (برای جلوگیری از بزرگ شدن دیتابیس)"""
+    try:
+        days = int(days)
+    except (TypeError, ValueError):
+        return False
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute(
+            "DELETE FROM usage_logs WHERE created_at < datetime('now', ?)",
+            (f"-{days} days",),
+        )
+        conn.commit()
+        return c.rowcount
+    except Exception as e:
+        print(f"❌ خطا در پاک‌سازی لاگ‌های قدیمی: {e}")
+        return False
+    finally:
+        conn.close()
 
 
 # ===== توابع تنظیمات =====
@@ -1027,26 +1802,25 @@ def get_db_stats():
 
 
 def init_admin_user():
-    YOUR_USER_ID = 383415679
+    """اطمینان از ثبت سازنده/مالک ربات در لیست ادمین‌ها"""
 
     conn = get_db_connection()
     c = conn.cursor()
 
-    c.execute("SELECT COUNT(*) FROM admins")
-    count = c.fetchone()[0]
-
-    if count == 0:
+    for super_admin_id in SUPER_ADMIN_IDS:
         c.execute(
             """
             INSERT OR IGNORE INTO admins (user_id, added_by, is_active)
             VALUES (?, ?, 1)
         """,
-            (YOUR_USER_ID, YOUR_USER_ID),
+            (super_admin_id, super_admin_id),
         )
-        conn.commit()
-        print(f"✅ ادمین اولیه با آیدی {YOUR_USER_ID} اضافه شد.")
-    else:
-        print("ℹ️ ادمین اولیه قبلاً اضافه شده است.")
+        c.execute(
+            "UPDATE admins SET is_active = 1 WHERE user_id = ?", (super_admin_id,)
+        )
+        print(f"✅ دسترسی کامل برای آیدی {super_admin_id} فعال است.")
+
+    conn.commit()
 
     conn.close()
 

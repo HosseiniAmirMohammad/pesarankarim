@@ -44,7 +44,6 @@ from database import (
     get_last_request_phone,
     get_user_points,
     save_review_reward,
-    reconcile_review_rewards_from_logs,
     get_review_rewards,
     get_review_rewards_count,
     get_review_rewards_stats,
@@ -1151,7 +1150,6 @@ async def my_points_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show the user's total points (calculated from review_rewards)."""
     user_id = update.effective_user.id
     try:
-        reconcile_review_rewards_from_logs()
         breakdown = get_user_points_breakdown(user_id)
         points = breakdown.get("total", 0)
         google_claims = breakdown.get("google_claims", 0)
@@ -2158,11 +2156,7 @@ async def continue_button_handler(update: Update, context: ContextTypes.DEFAULT_
     else:
         branch_state = user_state(context, user_id)
         branch = branch_state.get("branch") if isinstance(branch_state, dict) else None
-        branch = (
-            branch or context.user_data.get("branch", "mashhad")
-            if hasattr(context, "user_data") and isinstance(context.user_data, dict)
-            else "mashhad"
-        )
+        branch = branch or context.user_data.get("branch", "mashhad") if hasattr(context, "user_data") and isinstance(context.user_data, dict) else "mashhad"
         await update.message.reply_text(
             "🔙 به منوی اصلی بازگشتید.",
             reply_markup=branch_menu_kb(branch, user_id),
@@ -3859,7 +3853,6 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     init_db()
-    reconcile_review_rewards_from_logs()
     init_admin_user()
     app = Application.builder().token(TOKEN).post_init(on_startup).build()
 
