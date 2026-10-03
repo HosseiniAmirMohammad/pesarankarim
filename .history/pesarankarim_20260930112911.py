@@ -5,6 +5,7 @@ from telegram import (
     InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
+    
 )
 from telegram.ext import (
     Application,
@@ -581,7 +582,7 @@ BTN_MY_POINTS = KeyboardButton("📊 امتیاز من")
 
 BTN_BACK_TEXT = "بازگشت"
 BTN_BACK = KeyboardButton(BTN_BACK_TEXT)
-BTN_ADMIN_BACK_TEXT = "🔙 بازگشت به منو"
+BTN_ADMIN_BACK_TEXT = BTN_BACK_TEXT
 
 BTN_ADMIN_PANEL = KeyboardButton("🛠️ پنل مدیریت")
 BTN_ADMIN_STATS = KeyboardButton("آمار")
@@ -1370,7 +1371,7 @@ async def admin_preupload_phone_code(
 ):
     text = update.message.text
 
-    if text in (BTN_ADMIN_BACK_TEXT, BTN_BACK_TEXT):
+    if text == BTN_ADMIN_BACK_TEXT:
         context.user_data.pop("admin_action", None)
         await admin_command(update, context)
         return
@@ -1438,7 +1439,7 @@ async def handle_admin_management(update: Update, context: ContextTypes.DEFAULT_
         return
 
     if context.user_data.get("admin_action") == "add_admin":
-        if text in (BTN_ADMIN_BACK_TEXT, BTN_BACK_TEXT):
+        if text == BTN_ADMIN_BACK_TEXT:
             context.user_data.pop("admin_action", None)
             await admin_manage(update, context)
             return
@@ -1520,7 +1521,7 @@ async def handle_admin_management(update: Update, context: ContextTypes.DEFAULT_
         return
 
     if context.user_data.get("admin_action") == "remove_admin":
-        if text in (BTN_ADMIN_BACK_TEXT, BTN_BACK_TEXT):
+        if text == BTN_ADMIN_BACK_TEXT:
             context.user_data.pop("admin_action", None)
             await admin_manage(update, context)
             return

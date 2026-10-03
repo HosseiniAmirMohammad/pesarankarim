@@ -5,6 +5,7 @@ from telegram import (
     InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
+    
 )
 from telegram.ext import (
     Application,
@@ -1520,7 +1521,7 @@ async def handle_admin_management(update: Update, context: ContextTypes.DEFAULT_
         return
 
     if context.user_data.get("admin_action") == "remove_admin":
-        if text in (BTN_ADMIN_BACK_TEXT, BTN_BACK_TEXT):
+        if text == BTN_ADMIN_BACK_TEXT:
             context.user_data.pop("admin_action", None)
             await admin_manage(update, context)
             return
