@@ -13,47 +13,35 @@ GROUP_TEHRAN_PHOTO = -1004324542601
 GROUP_MASHHAD_COMPLAINT = -1004383312415
 GROUP_TEHRAN_COMPLAINT = -1004419896463
 
-# ===== گروه‌های لیست انتظار (هر شعبه یک گروه) =====
-# وقتی کاربری درخواست عکس ثبت کند، مشخصات او در گروه مربوط به شعبه‌اش ارسال می‌شود
-# و هر چند ساعت یک‌بار لیست همه کاربران در انتظار دریافت عکس در همین گروه‌ها فرستاده می‌شود.
-# آیدی گروه‌ها در تلگرام با -100 شروع می‌شود؛ اگر آیدی را بدون منفی وارد کنید،
-# خود ربات آن را اصلاح می‌کند (تابع normalize_group_chat_id در pesarankarim.py).
+
 GROUP_MASHHAD_WAITING = -1004355675580
 GROUP_TEHRAN_WAITING = -1004473279586
 
-# هر چند ساعت یک‌بار لیست کاربران در انتظار دریافت عکس در گروه‌های بالا ارسال شود
+
 WAITING_LIST_INTERVAL_HOURS = 3
 
-# ===== پیامهای نظرسنجی و دریافت ۱۰ امتیاز =====
-# شماره پیامهایی که در گروههای لیست انتظار منتشر شده‌اند و هنگام اعلام رضایت
-# ۵ ستاره برای مشتری کپی/ارسال می‌شوند.
-# (مشهد: https://t.me/c/4355675580/3  |  تهران: https://t.me/c/4473279586/3)
-#
-# ترتیب ارسال این پیام گیف:
-#   ۱) اگر مدیر از پنل مدیریت («🎬 گیف نظرسنجی») گیفی برای شعبه ثبت کرده باشد، همان ارسال می‌شود.
-#   ۲) در غیر این صورت همین پیام گروه لیست انتظار برای مشتری کپی می‌شود.
-#   ۳) اگر هیچ‌کدام ممکن نبود، پیام متنی جایگزین همراه دکمه لینک گوگل مپ ارسال می‌شود.
+
 REVIEW_GIF_MESSAGE_ID_MASHHAD = 3
 REVIEW_GIF_MESSAGE_ID_TEHRAN = 3
 
-# امتیازی که بعد از اعلام ثبت نظر ۵ ستاره در گوگل مپ به مشتری داده می‌شود
+
 REWARD_POINTS = 10
 
 MAIN_ADMIN_ID = 383415679
 
-# ===== سازنده/مالک ربات =====
-# آیدی عددی کارفرما (صاحب ربات). این آیدی‌ها همیشه به تمام بخش‌های ربات
-# (پنل مدیریت، آمار، مدیریت ادمین‌ها، عکس‌های پیش‌آپلود و ...) دسترسی کامل دارند
-# و از لیست ادمین‌ها قابل حذف شدن نیستند.
+
 OWNER_ID = 193597780
 SUPER_ADMIN_IDS = (OWNER_ID, MAIN_ADMIN_ID)
 
-# اگر True باشد، همه اعضای گروه‌های عکس (مشهد و تهران) می‌توانند عکس ارسال کنند.
-# اگر False شود، فقط ادمین‌ها اجازه ارسال عکس در گروه‌ها را دارند.
+
 ALLOW_GROUP_PHOTOS_FOR_ALL = True
 
 COOLDOWN_HOURS = 24
 DB_PATH = "pesarankarim.db"
 
-GOOGLE_MAP_MASHHAD = "https://goo.gl/maps/2uReg6JVGWT3kmXaA"
-GOOGLE_MAP_TEHRAN = "https://goo.gl/1NYXYZM5rj7QLZeUA"
+GOOGLE_MAP_MASHHAD = (
+    "https://search.google.com/local/writereview?placeid=ChIJ3YrapemRbD8RM2d30ngNSig"
+)
+GOOGLE_MAP_TEHRAN = (
+    "https://search.google.com/local/writereview?placeid=ChIJsTjtDAAHjj8RIeGyvM4NXFs"
+)

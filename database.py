@@ -5,7 +5,7 @@ import re
 
 try:
     from config import SUPER_ADMIN_IDS
-except Exception:  # اگر config در دسترس نبود، حداقل‌های امن استفاده می‌شود
+except Exception:                                                          
     SUPER_ADMIN_IDS = ()
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "pesarankarim.db")
@@ -89,7 +89,7 @@ def init_db():
         if not any(col[1] == column_name for col in existing):
             c.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")
 
-    # ===== ۱. جدول درخواست‌های عکس با فیلد branch =====
+                                                        
     c.execute("""CREATE TABLE IF NOT EXISTS photo_requests (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER NOT NULL,
@@ -104,7 +104,7 @@ def init_db():
         last_request_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )""")
 
-    # ===== ۲. جدول نظرسنجی با فیلد branch =====
+                                                
     c.execute("""CREATE TABLE IF NOT EXISTS surveys (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER NOT NULL,
@@ -116,7 +116,7 @@ def init_db():
         FOREIGN KEY (photo_request_id) REFERENCES photo_requests(id)
     )""")
 
-    # ===== ۳. جدول ادمین‌ها =====
+                                  
     c.execute("""CREATE TABLE IF NOT EXISTS admins (
         user_id INTEGER PRIMARY KEY,
         username TEXT,
@@ -129,14 +129,14 @@ def init_db():
         FOREIGN KEY (added_by) REFERENCES admins(user_id)
     )""")
 
-    # ===== ۴. جدول تنظیمات =====
+                                 
     c.execute("""CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,
         value TEXT,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )""")
 
-    # ===== ۵. جدول تاریخچه ارسال =====
+                                       
     c.execute("""CREATE TABLE IF NOT EXISTS send_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         photo_request_id INTEGER,
@@ -147,7 +147,7 @@ def init_db():
         FOREIGN KEY (admin_id) REFERENCES admins(user_id)
     )""")
 
-    # ===== ۶. جدول گزارشات =====
+                                 
     c.execute("""CREATE TABLE IF NOT EXISTS daily_stats (
         date TEXT PRIMARY KEY,
         total_requests INTEGER DEFAULT 0,
@@ -160,7 +160,7 @@ def init_db():
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )""")
 
-    # ===== ۷. جدول عکس‌های پیش‌آپلود شده (ویژگی جدید) =====
+                                                            
     c.execute("""CREATE TABLE IF NOT EXISTS preuploaded_photos (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         phone TEXT NOT NULL,
@@ -176,7 +176,7 @@ def init_db():
     )""")
     ensure_column("preuploaded_photos", "file_type TEXT DEFAULT 'photo'")
 
-    # ===== ۸. جدول بلاک‌شده‌ها =====
+                                     
     c.execute("""CREATE TABLE IF NOT EXISTS blocked_users (
         user_id INTEGER PRIMARY KEY,
         reason TEXT,
@@ -185,8 +185,8 @@ def init_db():
         FOREIGN KEY (blocked_by) REFERENCES admins(user_id)
     )""")
 
-    # ===== ۹. جدول کاربران ربات (تاریخ عضویت در ربات) =====
-    # اولین باری که کاربر ربات را استفاده کند، به عنوان عضو ربات با تاریخ عضویت ثبت می‌شود
+                                                            
+                                                                                          
     c.execute("""CREATE TABLE IF NOT EXISTS users (
         user_id INTEGER PRIMARY KEY,
         username TEXT,
@@ -197,8 +197,8 @@ def init_db():
         usage_count INTEGER DEFAULT 0
     )""")
 
-    # ===== ۱۰. جدول لاگ استفاده از ربات =====
-    # هر بار استفاده کاربر از ربات (فشردن دکمه‌ها، ثبت درخواست، نظرسنجی و ...) در این جدول ثبت می‌شود
+                                              
+                                                                                                     
     c.execute("""CREATE TABLE IF NOT EXISTS usage_logs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER NOT NULL,
@@ -209,9 +209,9 @@ def init_db():
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )""")
 
-    # ===== ۱۱. جدول دریافت امتیاز نظرسنجی (نظر ۵ ستاره در گوگل مپ) =====
-    # وقتی مشتری روی دکمه «دریافت امتیاز» می‌زند، در این جدول ثبت می‌شود تا
-    # مدیر بتواند بررسی و تایید کند که نظر ۵ ستاره واقعا ثبت شده است.
+                                                                         
+                                                                           
+                                                                     
     c.execute("""CREATE TABLE IF NOT EXISTS review_rewards (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER NOT NULL,
@@ -221,10 +221,10 @@ def init_db():
         claimed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )""")
 
-    # ===== ۱۲. جدول گیف/ویدیوی نظرسنجی هر شعبه =====
-    # گیفی که بعد از اعلام رضایت ۵ ستاره برای مشتری فرستاده می‌شود. مدیر می‌تواند آن
-    # را از پنل مدیریت (بخش «🎬 گیف نظرسنجی») ثبت یا تغییر دهد؛ اگر چیزی ثبت نشده
-    # باشد، پیام گیف گروه لیست انتظار همان شعبه برای مشتری کپی می‌شود.
+                                                     
+                                                                                    
+                                                                                
+                                                                      
     c.execute("""CREATE TABLE IF NOT EXISTS review_gifs (
         branch TEXT PRIMARY KEY,
         file_id TEXT NOT NULL,
@@ -233,7 +233,7 @@ def init_db():
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )""")
 
-    # ایجاد ایندکس‌ها برای سرعت بیشتر
+                                     
     c.execute(
         "CREATE INDEX IF NOT EXISTS idx_photo_requests_user_id ON photo_requests(user_id)"
     )
@@ -282,9 +282,9 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_review_rewards_claimed_at ON review_rewards(claimed_at)"
     )
 
-    # ===== پر کردن جدول کاربران از داده‌های قبلی ربات =====
-    # فقط زمانی اجرا می‌شود که جدول کاربران خالی باشد (یعنی یک‌بار بعد از این بروزرسانی).
-    # تاریخ عضویت این کاربران دقیق نیست و با اولین فعالیت ثبت‌شده‌شان تقریب زده می‌شود.
+                                                            
+                                                                                         
+                                                                                       
     c.execute("SELECT COUNT(*) FROM users")
     if c.fetchone()[0] == 0:
         for source_table in ("photo_requests", "surveys"):
@@ -296,8 +296,8 @@ def init_db():
                 GROUP BY user_id
             """)
 
-    # ===== اطمینان از دسترسی کامل سازنده/مالک ربات =====
-    # این آیدی‌ها همیشه در لیست ادمین‌ها فعال نگه داشته می‌شوند
+                                                         
+                                                               
     for super_admin_id in SUPER_ADMIN_IDS:
         c.execute(
             """
@@ -324,7 +324,7 @@ def get_db_connection():
     return conn
 
 
-# ===== توابع مدیریت ادمین =====
+                                
 def add_admin(user_id, username=None, first_name=None, last_name=None, added_by=None):
     conn = get_db_connection()
     c = conn.cursor()
@@ -346,7 +346,7 @@ def add_admin(user_id, username=None, first_name=None, last_name=None, added_by=
 
 
 def remove_admin(user_id):
-    # سازنده/مالک ربات قابل حذف شدن نیست
+                                        
     if is_super_admin(user_id):
         return False
 
@@ -365,7 +365,7 @@ def remove_admin(user_id):
 
 def delete_admin_permanently(user_id):
     """حذف کامل ادمین از دیتابیس"""
-    # سازنده/مالک ربات قابل حذف شدن نیست
+                                        
     if is_super_admin(user_id):
         return False
 
@@ -391,7 +391,7 @@ def is_super_admin(user_id):
 
 
 def is_admin(user_id):
-    # سازنده/مالک ربات همیشه دسترسی کامل دارد، حتی اگر از دیتابیس حذف شود
+                                                                         
     if is_super_admin(user_id):
         return True
 
@@ -419,7 +419,7 @@ def get_admins():
     return result
 
 
-# ===== توابع جدید مدیریت ادمین (اضافه شده) =====
+                                                 
 def get_all_admins(include_inactive=False):
     """دریافت لیست همه ادمین‌ها با فرمت دیکشنری"""
     conn = get_db_connection()
@@ -479,7 +479,7 @@ def update_admin_login(user_id):
         conn.close()
 
 
-# ===== توابع عکس‌های پیش‌آپلود شده =====
+                                         
 def save_preuploaded_photo(
     phone, photo_code, branch, file_id, admin_id, message_id=None, file_type="photo"
 ):
@@ -599,7 +599,7 @@ def delete_preuploaded_photo(photo_id):
         conn.close()
 
 
-# ===== توابع مدیریت کاربران بلاک =====
+                                       
 def is_user_blocked(user_id):
     """بررسی بلاک بودن کاربر"""
     conn = get_db_connection()
@@ -646,7 +646,7 @@ def unblock_user(user_id):
         conn.close()
 
 
-# ===== توابع درخواست عکس =====
+                               
 def save_photo_request(
     user_id, phone, photo_code, photo_date, branch, status="pending"
 ):
@@ -814,7 +814,7 @@ def get_user_requests(user_id):
     return [dict(row) for row in results]
 
 
-# ===== توابع نظرسنجی =====
+                           
 def save_survey(user_id, rating, comment, branch="mashhad", photo_request_id=None):
     """ذخیره نظرسنجی در دیتابیس با شعبه"""
     conn = get_db_connection()
@@ -854,7 +854,7 @@ def get_surveys_by_user(user_id):
     return [dict(row) for row in results]
 
 
-# ===== توابع تاریخچه =====
+                           
 def save_send_history(photo_request_id, admin_id, status):
     conn = get_db_connection()
     c = conn.cursor()
@@ -893,7 +893,7 @@ def get_send_history(photo_request_id):
     return [dict(row) for row in results]
 
 
-# ===== توابع آمار با پشتیبانی از شعبه =====
+                                            
 def get_daily_stats(date=None, branch=None):
     """دریافت آمار روزانه بر اساس شعبه"""
     if date is None:
@@ -1112,9 +1112,9 @@ def get_preuploaded_photo_count(branch=None):
     return result
 
 
-# ===== توابع لاگ کاربران ربات =====
-# زمان‌ها در دیتابیس به وقت UTC ذخیره می‌شوند؛ برای مقایسه تاریخ «امروز» به وقت ایران
-# (UTC+3:30) از این مودیفایرها استفاده می‌شود.
+                                    
+                                                                                     
+                                              
 IRAN_TZ_SQL = "'+3 hours', '+30 minutes'"
 
 
@@ -1204,7 +1204,7 @@ def log_bot_usage(
     conn = get_db_connection()
     c = conn.cursor()
     try:
-        # ثبت کاربر در اولین استفاده (تاریخ عضویت) و بروزرسانی اطلاعاتش
+                                                                       
         _upsert_user(c, user_id, username, first_name, last_name)
         c.execute(
             """
@@ -1272,7 +1272,7 @@ def get_last_request_phone(user_id):
     return row[0] if row else None
 
 
-# ===== توابع دریافت امتیاز نظرسنجی (نظر ۵ ستاره در گوگل مپ) =====
+                                                                  
 def save_review_reward(user_id, phone=None, branch="mashhad", status="claimed"):
     """ثبت دریافت امتیاز توسط کاربر؛ خروجی شامل تعداد کل اعلام‌های این کاربر است"""
     if user_id is None:
@@ -1335,20 +1335,20 @@ def get_user_points(user_id):
     conn = get_db_connection()
     c = conn.cursor()
     try:
-        # count google (default) claims
+                                       
         c.execute(
             "SELECT COUNT(*) FROM review_rewards WHERE user_id = ? AND status = 'claimed'",
             (user_id,),
         )
         google_claims = c.fetchone()[0]
-        # count nshn claims
+                           
         c.execute(
             "SELECT COUNT(*) FROM review_rewards WHERE user_id = ? AND status = 'nshn'",
             (user_id,),
         )
         nshn_claims = c.fetchone()[0]
         conn.close()
-        # constants are imported in the main module; keep defaults here
+                                                                       
         try:
             from config import REWARD_POINTS, NSHN_REWARD_POINTS
 
@@ -1524,7 +1524,7 @@ def get_review_rewards_stats():
     return stats
 
 
-# ===== توابع گیف نظرسنجی (پیام گیف بعد از اعلام رضایت ۵ ستاره) =====
+                                                                     
 def save_review_gif(branch, file_id, file_type="animation", caption=None):
     """ثبت/بروزرسانی گیف نظرسنجی یک شعبه (با file_id ارسالی ادمین)"""
     if not file_id:
@@ -1729,7 +1729,7 @@ def delete_old_usage_logs(days=180):
         conn.close()
 
 
-# ===== توابع تنظیمات =====
+                           
 def set_setting(key, value):
     conn = get_db_connection()
     c = conn.cursor()
@@ -1769,7 +1769,7 @@ def get_all_settings():
     return {row[0]: row[1] for row in results}
 
 
-# ===== توابع کمکی =====
+                        
 def get_db_stats():
     """دریافت آمار کلی دیتابیس"""
     conn = get_db_connection()
@@ -1777,23 +1777,23 @@ def get_db_stats():
 
     stats = {}
 
-    # تعداد کل درخواست‌ها
+                         
     c.execute("SELECT COUNT(*) FROM photo_requests")
     stats["total_requests"] = c.fetchone()[0]
 
-    # تعداد کاربران منحصر به فرد
+                                
     c.execute("SELECT COUNT(DISTINCT user_id) FROM photo_requests")
     stats["unique_users"] = c.fetchone()[0]
 
-    # تعداد ادمین‌ها
+                    
     c.execute("SELECT COUNT(*) FROM admins WHERE is_active = 1")
     stats["total_admins"] = c.fetchone()[0]
 
-    # تعداد نظرسنجی‌ها
+                      
     c.execute("SELECT COUNT(*) FROM surveys")
     stats["total_surveys"] = c.fetchone()[0]
 
-    # تعداد عکس‌های پیش‌آپلود
+                             
     c.execute("SELECT COUNT(*) FROM preuploaded_photos WHERE used = 0")
     stats["preuploaded_photos"] = c.fetchone()[0]
 
