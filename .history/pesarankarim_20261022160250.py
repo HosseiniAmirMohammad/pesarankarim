@@ -1,10 +1,10 @@
 from telegram import (
     Update,
+    KeyboardButton,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
-    KeyboardButton,
 )
 from telegram.ext import (
     Application,
@@ -21,6 +21,7 @@ from database import (
     get_pending_requests,
     get_failed_requests,
     get_daily_stats,
+    get_user_points_breakdown,
     get_db_connection,
     get_all_admins,
     add_admin,
@@ -43,24 +44,58 @@ from database import (
     update_survey_comment,
     get_last_request_phone,
     save_review_reward,
+    reconcile_review_rewards_from_logs,
     get_review_rewards,
     get_review_rewards_count,
     get_review_rewards_stats,
     save_review_gif,
     get_review_gif,
     clear_review_gif,
+    get_setting,
+    set_setting,
 )
 import asyncio
 import jdatetime
 import re
+import traceback
 from datetime import datetime, timedelta, timezone
 from config import *
+
+NSHN_MASHHAD = "https://neshan.org/maps/add-review/b7b03632c59fce465cbf2a48d445ec59#c36.340-59.588-18z-0p"
+NSHN_TEHRAN = "https://neshan.org/maps/add-review/51f9f83fc9a1b7eb4faff5a06180484c"
+NSHN_REWARD_POINTS = 50
+CONTINUE_BUTTON_TEXT = "ادامه"
+NSHN_BUTTON_TEXT = CONTINUE_BUTTON_TEXT
+
+
+CLAIM_DELAY_SECONDS = 5 * 60
+
+GOOGLE_THIRTY_SECONDS_MESSAGE = (
+    "اینکار تنها ۳۰ ثانیه طول میکشد اما با این کار،شما کمک شایانی به ما در ارائه خدمات بهتر و به روز تر میکنید🙏🌹\n"
+    "لطفا۵ستاره فراموش نشه😇\n"
+    "ممنون از لطف شما"
+)
+
+GOOGLE_CLAIM_PROMPT = "لطفا پس از ثبت پنج ستاره برای ما برروی دکمه ادامه کلیک کنید:"
+NSHN_CLAIM_PROMPT = "لطفا پس از ثبت نظر در نشان برروی دکمه ادامه کلیک کنید:"
 
 
 def make_keyboard(buttons, row_width=2):
     return InlineKeyboardMarkup(
         [buttons[i : i + row_width] for i in range(0, len(buttons), row_width)]
     )
+
+
+def fix_url(url):
+    """اگر لینک بدون http/https باشد، تلگرام دکمه را رد می‌کند؛ پس آن را اضافه می‌کنیم"""
+    url = str(url).strip()
+    if url.startswith(("http://", "https://", "tg://")):
+        return url
+    return "https://" + url
+
+
+def link_kb(label, url):
+    return InlineKeyboardMarkup([[InlineKeyboardButton(label, url=fix_url(url))]])
 
 
 def persian_to_english_numbers(text):
@@ -157,13 +192,12 @@ def extract_phone_and_code(raw_text):
     return phone, code
 
 
-# ===== ابزارهای لاگ کاربران ربات =====
 IRAN_TIMEZONE = timezone(timedelta(hours=3, minutes=30))
 USERS_LOG_PAGE_SIZE = 10
 USAGE_LOG_PAGE_SIZE = 10
 REWARD_CLAIMS_PAGE_SIZE = 10
 
-# برچسب خوانا برای ورودی‌های وسط فرایند ثبت عکس
+
 STEP_USAGE_LABELS = {
     "year": "انتخاب سال عکس",
     "month": "انتخاب ماه عکس",
@@ -259,9 +293,23 @@ def log_user_activity(user, action, detail=None):
         print(f"❌ خطا در ثبت فعالیت کاربر: {e}")
 
 
+def normalize_branch_name(branch):
+    """حذف تنوع نام شعبه (انگلیسی/فارسی/حروف بزرگ) و برگرداندن نام استاندارد"""
+    value = str(branch or "").strip().lower()
+    if not value:
+        return "mashhad"
+    if value in {"tehran", "تهران"}:
+        return "tehran"
+    if value in {"mashhad", "مشهد"}:
+        return "mashhad"
+    if "tehran" in value or "تهران" in value:
+        return "tehran"
+    return "mashhad"
+
+
 def log_photo_request_activity(user, phone, photo_code, branch):
     """ثبت لاگ ثبت درخواست عکس یادگاری توسط کاربر"""
-    branch_name = "مشهد" if branch == "mashhad" else "تهران"
+    branch_name = "مشهد" if normalize_branch_name(branch) == "mashhad" else "تهران"
     log_user_activity(
         user,
         "ثبت درخواست عکس یادگاری",
@@ -269,7 +317,6 @@ def log_photo_request_activity(user, phone, photo_code, branch):
     )
 
 
-# ===== گروه‌های لیست انتظار دریافت عکس =====
 def normalize_group_chat_id(chat_id):
     """اصلاح آیدی گروه/کانال تلگرام
 
@@ -292,12 +339,14 @@ def normalize_group_chat_id(chat_id):
 
 def waiting_group_chat_id(branch):
     """آیدی گروه لیست انتظار هر شعبه"""
+    branch = normalize_branch_name(branch)
     chat_id = GROUP_TEHRAN_WAITING if branch == "tehran" else GROUP_MASHHAD_WAITING
     return normalize_group_chat_id(chat_id)
 
 
 def branch_display_name(branch):
     """نام نمایشی شعبه"""
+    branch = normalize_branch_name(branch)
     return "مشهد (خیام)" if branch == "mashhad" else "تهران (هتل پارسیان آزادی)"
 
 
@@ -322,7 +371,6 @@ def split_message_text(text, limit=3900):
 
 
 def waiting_list_text(branch):
-    """متن لیست کاربران در انتظار دریافت عکس (None اگر کسی در انتظار نباشد)"""
     rows = get_pending_requests_with_users(branch)
     if not rows:
         return None
@@ -530,35 +578,23 @@ BTN_CHECK = InlineKeyboardButton("بررسی عضویت", callback_data="check")
 BTN_MASHHAD = KeyboardButton("شعبه مشهد(خیام)")
 BTN_TEHRAN = KeyboardButton("شعبه تهران(هتل پارسیان آزادی)")
 
-BTN_MASHHAD_PHOTO = KeyboardButton("دریافت عکس یادگاری")
-BTN_MASHHAD_APP = KeyboardButton("اپلیکیشن پسران کریم")
-BTN_MASHHAD_MENU = KeyboardButton("منو به همراه قیمت")
-BTN_MASHHAD_FULL_MENU = KeyboardButton("منو به همراه تصویر")
-BTN_MASHHAD_ORDER = KeyboardButton("سفارش آنلاین")
-BTN_MASHHAD_PHONE_ORDER = KeyboardButton("سفارش تلفنی و رزرو مجالس")
-BTN_MASHHAD_LOCATION = KeyboardButton("مسیریابی(لوکیشن)")
-BTN_MASHHAD_ADDRESS = KeyboardButton("آدرس ما")
-BTN_MASHHAD_SOCIAL = KeyboardButton("شبکه های اجتماعی ما")
-BTN_MASHHAD_HISTORY = KeyboardButton("تاریخچه پسران کریم")
-BTN_CHANGE_BRANCH = KeyboardButton("تغییر شعبه")
-
-
-BTN_TEHRAN_PHOTO = KeyboardButton("دریافت عکس یادگاری")
-BTN_TEHRAN_APP = KeyboardButton("اپلیکیشن پسران کریم")
-BTN_TEHRAN_MENU = KeyboardButton("منو به همراه قیمت")
-BTN_TEHRAN_FULL_MENU = KeyboardButton("منو به همراه تصویر")
-BTN_TEHRAN_ORDER = KeyboardButton("سفارش آنلاین")
-BTN_TEHRAN_PHONE_ORDER = KeyboardButton("سفارش تلفنی و رزرو مجالس")
-BTN_TEHRAN_LOCATION = KeyboardButton("مسیریابی(لوکیشن)")
-BTN_TEHRAN_ADDRESS = KeyboardButton("آدرس ما")
-BTN_TEHRAN_SOCIAL = KeyboardButton("شبکه های اجتماعی ما")
-BTN_TEHRAN_HISTORY = KeyboardButton("تاریخچه پسران کریم")
+BTN_PHOTO = KeyboardButton("دریافت عکس یادگاری")
+BTN_APP = KeyboardButton("اپلیکیشن پسران کریم")
+BTN_MENU = KeyboardButton("منو به همراه قیمت")
+BTN_FULL_MENU = KeyboardButton("منو به همراه تصویر")
+BTN_ORDER = KeyboardButton("سفارش آنلاین")
+BTN_PHONE_ORDER = KeyboardButton("سفارش تلفنی و رزرو مجالس")
+BTN_LOCATION = KeyboardButton("مسیریابی(لوکیشن)")
+BTN_ADDRESS = KeyboardButton("آدرس ما")
+BTN_SOCIAL = KeyboardButton("شبکه های اجتماعی ما")
+BTN_HISTORY = KeyboardButton("تاریخچه پسران کریم")
 BTN_CHANGE_BRANCH = KeyboardButton("تغییر شعبه")
 BTN_SUPPORT = KeyboardButton("پشتیبانی")
+BTN_MY_POINTS = KeyboardButton("📊 امتیاز من")
 
 BTN_BACK_TEXT = "بازگشت"
 BTN_BACK = KeyboardButton(BTN_BACK_TEXT)
-BTN_ADMIN_BACK_TEXT = BTN_BACK_TEXT
+BTN_ADMIN_BACK_TEXT = "🔙 بازگشت به منو"
 
 BTN_ADMIN_PANEL = KeyboardButton("🛠️ پنل مدیریت")
 BTN_ADMIN_STATS = KeyboardButton("آمار")
@@ -575,7 +611,7 @@ BTN_ADMIN_REWARD_CLAIMS = KeyboardButton("🎁 دریافت‌های ۱۰ امت
 BTN_ADMIN_REVIEW_GIF = KeyboardButton("🎬 گیف نظرسنجی")
 BTN_ADMIN_BACK = KeyboardButton("🔙 بازگشت به منو")
 
-# ===== دکمه‌های ثبت گیف نظرسنجی هر شعبه (پنل مدیریت) =====
+
 BTN_GIF_MASHHAD = KeyboardButton("🎬 گیف مشهد")
 BTN_GIF_TEHRAN = KeyboardButton("🎬 گیف تهران")
 BTN_GIF_DELETE_MASHHAD = KeyboardButton("🗑 حذف گیف مشهد")
@@ -584,11 +620,11 @@ BTN_GIF_DELETE_TEHRAN = KeyboardButton("🗑 حذف گیف تهران")
 BTN_YES = KeyboardButton("بله، عکس دیگری دارم")
 BTN_NO = KeyboardButton("نه، تمام شد")
 
-# ===== دکمه‌های نظرسنجی =====
+
 BTN_SURVEY_YES = KeyboardButton("بله، ۵ ستاره میدم")
 BTN_SURVEY_NO = KeyboardButton("خیر")
 
-# متن‌هایی که به عنوان پاسخ «بله» یا «خیر» در نظرسنجی پذیرفته می‌شوند
+
 SURVEY_YES_TEXTS = {
     BTN_SURVEY_YES.text,
     "بله",
@@ -627,9 +663,7 @@ MONTHS = [
 
 SUPPORT_USERNAME = "pesaranekarimphotos"
 
-# ===== پیام تحویل عکس یادگاری =====
-# این پیام بلافاصله بعد از ارسال عکس برای مشتری فرستاده می‌شود و بعد از آن
-# نظرسنجی رضایت شروع می‌شود.
+
 PHOTO_DELIVERED_MESSAGE = (
     "فایل اصلی عکستون با کیفیت بالا تقدیم محضر باسعادتتون🙏😇🌹\n\n"
     "سپاس از یادگاری که گذاشتید و قوت قلبی که بخشیدید🌺\n"
@@ -642,14 +676,15 @@ PHOTO_DELIVERED_MESSAGE = (
     "www.pesaranekarim.rest"
 )
 
-# ===== پیامهای نظرسنجی =====
+
 SURVEY_FIVE_STAR_QUESTION = "📊 نظرسنجی رضایت\n\nاز ۵ ستاره به ما ۵ ستاره می‌دهید؟"
 
 GOOGLE_REVIEW_MESSAGE = (
-    "ضمن عرض تشکر و قدردانی از رضایت شما\n\n"
-    "از همراهی شما در ارزیابی عملکرد رستوران سپاسگزاریم.\n"
-    "ثبت نظر شما برای ما ارزشمند است و ما را در بهتر شدن یاری می‌کند.\n\n"
-    "پس از ثبت نظر، روی دکمه زیر بزنید تا ثبت شما کامل شود."
+    "ضمن عرض تشکر و قدردانی از رضایت شما\n"
+    "لینک کاملا رسمی و قانونی در گوگل مپ جهت اعلام نظر شما طراحی شده است\n"
+    "لطفا به این لینک ورود کرده و ضمن اعلام نظرتون در مورد کم و کِیف عملکرد رستوران، نمره ۵ ستاره را برای ما داخل گوگل مپ به یادگار بگذارید\n"
+    "این کار بالاترین هدیه شماست در جهت رشد روزافزون ما\n"
+    "👇لینک نظر دهی👇"
 )
 
 LOW_RATING_REQUEST_MESSAGE = (
@@ -658,20 +693,36 @@ LOW_RATING_REQUEST_MESSAGE = (
 )
 
 LOW_RATING_REASON_REQUEST_MESSAGE = (
-    "لطفا دلیل نارضایتی خود را کامل بنویسید تا همکاران ما آن را بررسی و پیگیری کنند:"
+    "چنانچه انتقادی،پیشنهادی و یا فرمایشی دارید خوشحال میشیم بشنویم🙏🌹"
 )
 
-REWARD_INVITE_MESSAGE = (
-    f"🎁 هدیه {REWARD_POINTS} امتیازی\n\n"
-    f"اگر نظر ۵ ستاره خود را در گوگل مپ ثبت کردید، با دکمه زیر {REWARD_POINTS} امتیاز هدیه بگیرید:"
+LOW_RATING_THANKS_MESSAGE = (
+    "حتما تمامی مواردی که فرمودین رو پیگیری میکنیم\n"
+    " ممنون از وقتی که گذاشتید و  امیدواریم مجددا توفیق میزبانی شمارو داشته باشیم و اینبار با رضایت کامل شما🙏💛"
 )
 
-REWARD_THANKS_MESSAGE = "از مهر ماندگار شما صمیمانه سپاسگزاریم و امیدواریم بتونیم مجددا توفیق میزبانی شمارو داشته باشیم🙏😇🌸"
 
-# اگر ارسال/کپی پیام گیف ممکن نبود، این متن با دکمه «✅ نظر دادم» فرستاده می‌شود
+REWARD_CONGRATS_MESSAGE = (
+    "🎉 تبریک!\n"
+    f"شما {REWARD_POINTS} امتیاز هدیه گرفتید!\n\n"
+    "از مهر ماندگار شما صمیمانه سپاسگزاریم و امیدواریم بتونیم مجددا توفیق میزبانی شمارو داشته باشیم!🙏😇🌸"
+)
+
+NSHN_REWARD_CONGRATS_MESSAGE = (
+    "🎉 تبریک!\n"
+    f"شما {NSHN_REWARD_POINTS} امتیاز هدیه گرفتید!\n\n"
+    "از مهر ماندگار شما صمیمانه سپاسگزاریم و امیدواریم بتونیم مجددا توفیق میزبانی شمارو داشته باشیم!🙏😇🌸"
+)
+
+CLAIM_ERROR_MESSAGE = (
+    "❌ متاسفانه ثبت امتیاز با خطا مواجه شد. لطفا چند لحظه بعد دوباره تلاش کنید "
+    "یا با پشتیبانی تماس بگیرید."
+)
+
+
 REVIEW_GIF_FALLBACK_MESSAGE = "📍 لطفا نظر خود را درباره کم و کِیف عملکرد رستوران ثبت کنید و پس از آن روی دکمه زیر بزنید👇"
 
-# متن دکمه‌های ثبت/حذف گیف نظرسنجی هر شعبه
+
 REVIEW_GIF_SET_TEXTS = {
     BTN_GIF_MASHHAD.text: "mashhad",
     BTN_GIF_TEHRAN.text: "tehran",
@@ -684,32 +735,14 @@ REVIEW_GIF_DELETE_TEXTS = {
 
 def google_map_link(branch):
     """لینک نظر دهی در گوگل مپ برای هر شعبه"""
+    branch = normalize_branch_name(branch)
     return GOOGLE_MAP_TEHRAN if branch == "tehran" else GOOGLE_MAP_MASHHAD
-
-
-def google_review_kb(branch):
-    """دکمه لینک گوگل در این جریان حذف شده است؛ فقط دکمه «✅ نظر دادم» باقی می‌ماند."""
-    return None
-
-
-def review_done_kb(branch="mashhad"):
-    """دکمه «نظر دادم» زیر گیف نظرسنجی (با زدنش تبریک و امتیاز هدیه ثبت می‌شود)"""
-    branch = "tehran" if str(branch).lower() == "tehran" else "mashhad"
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "✅ نظر دادم",
-                    callback_data=f"claim_reward|{branch}",
-                )
-            ]
-        ]
-    )
 
 
 def review_gif_message_id(branch):
     """شماره پیام گیف نظرسنجی در گروه لیست انتظار شعبه"""
     try:
+        branch = normalize_branch_name(branch)
         if branch == "tehran":
             return int(REVIEW_GIF_MESSAGE_ID_TEHRAN)
         return int(REVIEW_GIF_MESSAGE_ID_MASHHAD)
@@ -729,6 +762,133 @@ def review_gif_kb():
     )
 
 
+def nshn_link_for(branch: str):
+    return NSHN_TEHRAN if normalize_branch_name(branch) == "tehran" else NSHN_MASHHAD
+
+
+def nshn_offer_message(branch: str):
+    """Compose the NSHN offer message (50 points incentive)."""
+    return (
+        "ضمن عرض تشکر و قدردانی از رضایت حضرتعالی، اگر نظر و تجربه ارزشمندتان را در اپلیکیشن «نشان» برای این شعبه ثبت فرمایید، ما به‌عنوان قدردانی، "
+        f"{NSHN_REWARD_POINTS} امتیاز هدیه تقدیم خواهیم کرد.\n\n"
+        "لطفاً روی دکمه لینک زیر بزنید و نظرتون رو مرقوم فرمایید؛ سپس پس از ۵ دقیقه دکمه «ادامه» جهت دریافت امتیاز فعال می‌گردد.\n\n"
+        "از همراهی و حمایت بی‌دریغتان بی‌نهایت سپاسگزاریم🌸"
+    )
+
+
+def continue_kb():
+    """کیبورد تک‌دکمه‌ای «ادامه»"""
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton(CONTINUE_BUTTON_TEXT)]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+
+def user_state(context, user_id):
+    """دسترسی به وضعیت (user_data) یک کاربر مشخص
+
+    اگر ادمین از سمت خودش نظرسنجی مشتری را شروع کند، وضعیت باید برای خودِ مشتری
+    تنظیم شود؛ پس از application.user_data استفاده می‌کنیم.
+    """
+    application = getattr(context, "application", None)
+    user_data_map = getattr(application, "user_data", None)
+    if user_data_map is not None:
+        try:
+            if user_id not in user_data_map:
+                user_data_map[user_id] = {}
+            return user_data_map[user_id]
+        except Exception:
+            pass
+
+    user_data = getattr(context, "user_data", None)
+    if user_data is None:
+        return {}
+    return user_data
+
+
+def set_pending_claim(context, user_id, value, branch=None):
+    """ثبت اینکه کاربر منتظر زدن دکمه «ادامه» برای کدام پاداش است (google / nshn)"""
+    state = user_state(context, user_id)
+    if isinstance(state, dict):
+        state["pending_claim"] = value
+        if branch:
+            state["pending_branch"] = branch
+
+    try:
+        raw = f"{value}|{branch or ''}" if value else ""
+        set_setting(f"pending_claim:{user_id}", raw)
+    except Exception as e:
+        print(f"❌ خطا در ذخیره وضعیت pending_claim: {e}")
+
+
+def get_pending_claim(context, user_id):
+    """خروجی: (نوع پاداش یا None، شعبه یا None)"""
+    state = user_state(context, user_id)
+    kind = state.get("pending_claim") if isinstance(state, dict) else None
+    branch = state.get("pending_branch") if isinstance(state, dict) else None
+
+    if not kind:
+        try:
+            raw = get_setting(f"pending_claim:{user_id}")
+        except Exception as e:
+            print(f"❌ خطا در خواندن وضعیت pending_claim: {e}")
+            raw = None
+        if raw and "|" in raw:
+            kind, saved_branch = raw.split("|", 1)
+            kind = kind or None
+            branch = saved_branch or branch
+
+    return kind, branch
+
+
+def set_survey_step(context, user_id, step=None, **extra):
+    """ثبت مرحله نظرسنجی برای یک کاربر"""
+    state = user_state(context, user_id)
+    if not isinstance(state, dict):
+        return
+
+    state["survey_step"] = step
+    for key, value in extra.items():
+        state[key] = value
+
+
+def survey_branch_for(context, user_id, fallback="mashhad"):
+    """شعبه‌ای که نظرسنجی این کاربر برای آن انجام می‌شود"""
+    state = user_state(context, user_id)
+    branch = state.get("survey_branch") if isinstance(state, dict) else None
+    if not branch:
+        branch = context.user_data.get("branch")
+    branch = branch or fallback
+    return normalize_branch_name(branch)
+
+
+async def send_nshn_offer(context, user_id, branch):
+    """Send NSHN offer with link button and schedule the delayed claim keyboard."""
+    try:
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=nshn_offer_message(branch),
+            reply_markup=link_kb("🔗 ثبت نظر در نشان", nshn_link_for(branch)),
+        )
+
+        async def delayed_claim():
+            await asyncio.sleep(CLAIM_DELAY_SECONDS)
+            try:
+                set_pending_claim(context, user_id, "nshn", branch)
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=NSHN_CLAIM_PROMPT,
+                    reply_markup=continue_kb(),
+                )
+            except Exception as e:
+                print(f"❌ خطا در ارسال دکمه ادامه نشان: {e}")
+
+        asyncio.create_task(delayed_claim())
+    except Exception as e:
+        print(f"❌ خطا در ارسال پیشنهاد نشان: {e}")
+
+
 def low_rating_kb():
     """دکمه‌های امتیاز ۱ تا ۴ ستاره برای مشتری ناراضی"""
     return ReplyKeyboardMarkup(
@@ -737,33 +897,8 @@ def low_rating_kb():
     )
 
 
-def reward_received_text(branch, claims_count=None):
-    """متن پیام تبریک و اعلام امتیاز بعد از ثبت نظر"""
-    now = jdatetime.datetime.now().strftime("%Y/%m/%d - %H:%M")
-    text = (
-        "🎉 تبریک!\n"
-        f"شما {REWARD_POINTS} امتیاز هدیه گرفتید!\n\n"
-        "✅ سپاس از همراهی شما در حمایت از رستوران\n"
-        f"📍 شعبه: {branch_display_name(branch)}\n"
-        f" زمان ثبت: {now}"
-    )
-    if claims_count and claims_count > 1:
-        text += f"\n\n🔹 این {claims_count}اُمین ثبت نظر شما در این شعبه است."
-    return text
-
-
-async def send_photo_delivered_message(context, user_id):
-    """ارسال پیام تحویل عکس یادگاری به مشتری (قبل از شروع نظرسنجی)"""
-    try:
-        await context.bot.send_message(chat_id=user_id, text=PHOTO_DELIVERED_MESSAGE)
-        return True
-    except Exception as e:
-        print(f"❌ خطا در ارسال پیام تحویل عکس: {e}")
-        return False
-
-
-async def send_review_gif_file(context, chat_id, gif, reply_markup=None):
-    """ارسال فایل گیف نظرسنجی ثبت‌شده همراه دکمه «✅ نظر دادم»"""
+async def send_review_gif_file(context, chat_id, gif):
+    """ارسال فایل گیف نظرسنجی (بدون دکمه)"""
     file_id = (gif or {}).get("file_id")
     if not file_id:
         raise ValueError("file_id گیف نظرسنجی مشخص نیست")
@@ -782,24 +917,15 @@ async def send_review_gif_file(context, chat_id, gif, reply_markup=None):
         try:
             if kind == "animation":
                 await context.bot.send_animation(
-                    chat_id=chat_id,
-                    animation=file_id,
-                    caption=caption,
-                    reply_markup=reply_markup,
+                    chat_id=chat_id, animation=file_id, caption=caption
                 )
             elif kind == "video":
                 await context.bot.send_video(
-                    chat_id=chat_id,
-                    video=file_id,
-                    caption=caption,
-                    reply_markup=reply_markup,
+                    chat_id=chat_id, video=file_id, caption=caption
                 )
             else:
                 await context.bot.send_document(
-                    chat_id=chat_id,
-                    document=file_id,
-                    caption=caption,
-                    reply_markup=reply_markup,
+                    chat_id=chat_id, document=file_id, caption=caption
                 )
             return True
         except Exception as e:
@@ -810,20 +936,16 @@ async def send_review_gif_file(context, chat_id, gif, reply_markup=None):
 
 
 async def send_review_gif(context, chat_id, branch):
-    """ارسال پیام گیف نظرسنجی همراه دکمه «✅ نظر دادم»
+    """ارسال پیام گیف نظرسنجی (بدون دکمه)
 
     ۱) گیفی که مدیر در پنل مدیریت ثبت کرده باشد
     ۲) کپی پیام گیف موجود در گروه لیست انتظار همان شعبه
     ۳) پیام متنی جایگزین (اگر هیچ‌کدام ممکن نبود)
     """
-    reply_markup = review_done_kb(branch)
-
     registered_gif = get_review_gif(branch)
     if registered_gif:
         try:
-            await send_review_gif_file(
-                context, chat_id, registered_gif, reply_markup=reply_markup
-            )
+            await send_review_gif_file(context, chat_id, registered_gif)
             return True
         except Exception as e:
             print(f"❌ ارسال گیف ثبت‌شده شعبه {branch} ناموفق بود: {e}")
@@ -836,25 +958,38 @@ async def send_review_gif(context, chat_id, branch):
                 chat_id=chat_id,
                 from_chat_id=source_chat_id,
                 message_id=message_id,
-                reply_markup=reply_markup,
             )
             return True
         except Exception as e:
             print(f"❌ کپی پیام گیف گروه لیست انتظار شعبه {branch} ناموفق بود: {e}")
 
-    await context.bot.send_message(
-        chat_id=chat_id, text=REVIEW_GIF_FALLBACK_MESSAGE, reply_markup=reply_markup
-    )
+    await context.bot.send_message(chat_id=chat_id, text=REVIEW_GIF_FALLBACK_MESSAGE)
     return False
 
 
 async def send_review_request_messages(context, chat_id, branch):
-    """بعد از اعلام رضایت ۵ ستاره: پیام تشکر (بدون دکمه) ← گیف با دکمه «✅ نظر دادم»"""
+    """بعد از اعلام رضایت ۵ ستاره: پیام تشکر + لینک ← گیف ← پیام ۳۰ ثانیه ← (بعد از ۵ دقیقه) دکمه «ادامه»."""
     await context.bot.send_message(
         chat_id=chat_id,
         text=GOOGLE_REVIEW_MESSAGE,
+        reply_markup=link_kb("🔗 ثبت نظر در گوگل مپ", google_map_link(branch)),
     )
     await send_review_gif(context, chat_id, branch)
+    await context.bot.send_message(chat_id=chat_id, text=GOOGLE_THIRTY_SECONDS_MESSAGE)
+
+    async def delayed_google_claim():
+        await asyncio.sleep(CLAIM_DELAY_SECONDS)
+        try:
+            set_pending_claim(context, chat_id, "google", branch)
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=GOOGLE_CLAIM_PROMPT,
+                reply_markup=continue_kb(),
+            )
+        except Exception as e:
+            print(f"❌ خطا در ارسال دکمه ادامه گوگل: {e}")
+
+    asyncio.create_task(delayed_google_claim())
 
 
 def admin_panel_kb():
@@ -882,46 +1017,32 @@ def branch_kb():
     )
 
 
-def mashhad_menu_kb(user_id=None):
+def branch_menu_kb(branch=None, user_id=None):
+    """منوی اصلی شعبه؛ اگر کاربر ادمین/سازنده ربات باشد دکمه پنل مدیریت هم اضافه می‌شود"""
     keyboard = [
-        [BTN_MASHHAD_PHOTO],
-        [BTN_MASHHAD_APP],
-        [BTN_MASHHAD_MENU, BTN_MASHHAD_FULL_MENU],
-        [BTN_MASHHAD_ORDER, BTN_MASHHAD_PHONE_ORDER],
-        [BTN_MASHHAD_LOCATION, BTN_MASHHAD_ADDRESS],
-        [BTN_MASHHAD_SOCIAL, BTN_MASHHAD_HISTORY],
+        [BTN_PHOTO],
+        [BTN_APP],
+        [BTN_MENU, BTN_FULL_MENU],
+        [BTN_ORDER, BTN_PHONE_ORDER],
+        [BTN_LOCATION, BTN_ADDRESS],
+        [BTN_SOCIAL, BTN_HISTORY],
         [BTN_CHANGE_BRANCH, BTN_SUPPORT],
+        [BTN_MY_POINTS],
     ]
     if user_id and is_admin(user_id):
         keyboard.insert(0, [BTN_ADMIN_PANEL])
-
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+
+def mashhad_menu_kb(user_id=None):
+    return branch_menu_kb("mashhad", user_id)
 
 
 def tehran_menu_kb(user_id=None):
-    keyboard = [
-        [BTN_TEHRAN_PHOTO],
-        [BTN_TEHRAN_APP],
-        [BTN_TEHRAN_MENU, BTN_TEHRAN_FULL_MENU],
-        [BTN_TEHRAN_ORDER, BTN_TEHRAN_PHONE_ORDER],
-        [BTN_TEHRAN_LOCATION, BTN_TEHRAN_ADDRESS],
-        [BTN_TEHRAN_SOCIAL, BTN_TEHRAN_HISTORY],
-        [BTN_CHANGE_BRANCH, BTN_SUPPORT],
-    ]
-    if user_id and is_admin(user_id):
-        keyboard.insert(0, [BTN_ADMIN_PANEL])
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-
-def branch_menu_kb(branch=None, user_id=None):
-    """منوی مربوط به شعبه؛ اگر کاربر ادمین/سازنده ربات باشد دکمه پنل مدیریت هم اضافه می‌شود"""
-    if branch == "tehran":
-        return tehran_menu_kb(user_id)
-    return mashhad_menu_kb(user_id)
+    return branch_menu_kb("tehran", user_id)
 
 
 def is_leap_year(year):
-
     return jdatetime.date(year, 1, 1).isleap()
 
 
@@ -941,10 +1062,7 @@ def get_current_persian_date():
 
 def get_persian_years():
     current_year = get_current_persian_date()[0]
-    years = []
-    for year in range(1400, current_year + 1):
-        years.append(str(year))
-    return years
+    return [str(year) for year in range(1400, current_year + 1)]
 
 
 def get_max_month_for_year(year):
@@ -961,7 +1079,6 @@ def get_max_day_for_month(year, month):
     if year == current_year and month == current_month:
         return current_day
     elif year == current_year and month > current_month:
-
         return 0
     else:
         return get_days_in_month(year, month)
@@ -971,7 +1088,7 @@ def year_kb():
     years = get_persian_years()
     keyboard = []
     row = []
-    for i, year in enumerate(years):
+    for year in years:
         row.append(KeyboardButton(year))
         if len(row) == 3:
             keyboard.append(row)
@@ -987,8 +1104,7 @@ def month_kb(year=None):
     keyboard = []
     row = []
     for i, month in enumerate(MONTHS):
-        month_number = i + 1
-        if month_number > max_month:
+        if i + 1 > max_month:
             continue
         row.append(KeyboardButton(month))
         if len(row) == 3:
@@ -1028,6 +1144,144 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def my_points_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """نمایش مجموع امتیاز کاربر (محاسبه‌شده از جدول review_rewards)"""
+    user_id = update.effective_user.id
+    try:
+        breakdown = get_user_points_breakdown(user_id)
+        points = breakdown.get("total", 0)
+        google_claims = breakdown.get("google_claims", 0)
+        nshn_claims = breakdown.get("nshn_claims", 0)
+    except Exception as e:
+        print(f"❌ خطا در خواندن امتیاز کاربر: {e}")
+        traceback.print_exc()
+        points = google_claims = nshn_claims = 0
+
+    await update.message.reply_text(
+        (
+            f"📊 امتیاز فعلی شما: {points}\n\n"
+            f"🔹 دریافت‌های گوگل: {google_claims} (هر کدام {REWARD_POINTS} امتیاز)\n"
+            f"🔹 دریافت‌های نشان: {nshn_claims} (هر کدام {NSHN_REWARD_POINTS} امتیاز)"
+        ),
+        reply_markup=branch_menu_kb(survey_branch_for(context, user_id), user_id),
+    )
+
+
+async def award_claim(context, user, kind, branch):
+    """ثبت پاداش گوگل مپ (kind='google') یا نشان (kind='nshn') برای کاربر
+
+    فقط اگر ثبت در دیتابیس موفق باشد پیام تبریک فرستاده می‌شود.
+    """
+    user_id = user.id
+    is_nshn = kind == "nshn"
+    status = "nshn" if is_nshn else "claimed"
+    points = NSHN_REWARD_POINTS if is_nshn else REWARD_POINTS
+
+    phone = None
+    try:
+        phone = get_last_request_phone(user_id)
+    except Exception as e:
+        print(f"❌ خطا در خواندن شماره آخرین درخواست کاربر: {e}")
+
+    result = None
+    try:
+        result = save_review_reward(
+            user_id=user_id, phone=phone, branch=branch, status=status
+        )
+    except Exception as e:
+        print(f"❌ خطا در ثبت امتیاز ({status}): {e}")
+        traceback.print_exc()
+
+    if not result:
+        print(f"❌ ثبت امتیاز ({status}) برای کاربر {user_id} ناموفق بود.")
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=CLAIM_ERROR_MESSAGE,
+            reply_markup=branch_menu_kb(branch, user_id),
+        )
+        return False
+
+    log_user_activity(
+        user,
+        f"دریافت {points} امتیاز هدیه" + (" (نشان)" if is_nshn else " (گوگل مپ)"),
+        detail=(
+            f"شعبه {branch_display_name(branch)}"
+            + (f" | تلفن: {phone}" if phone else "")
+            + (" | نشان" if is_nshn else " | گوگل")
+        ),
+    )
+
+    try:
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=NSHN_REWARD_CONGRATS_MESSAGE if is_nshn else REWARD_CONGRATS_MESSAGE,
+            reply_markup=branch_menu_kb(branch, user_id),
+        )
+    except Exception as e:
+        print(f"❌ خطا در ارسال پیام تبریک: {e}")
+
+    if not is_nshn:
+        await send_nshn_offer(context, user_id, branch)
+
+    return True
+
+
+async def continue_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """دکمه «ادامه» برای گوگل مپ و نشان؛ بر اساس مرحله فعلی کاربر"""
+    if update.message is None or update.message.text != CONTINUE_BUTTON_TEXT:
+        return
+
+    user_id = update.effective_user.id
+    kind, pending_branch = get_pending_claim(context, user_id)
+    branch = pending_branch or survey_branch_for(context, user_id)
+    branch = "tehran" if str(branch).lower() == "tehran" else "mashhad"
+
+    if kind in ("google", "nshn"):
+
+        set_pending_claim(context, user_id, None)
+        await award_claim(context, update.effective_user, kind, branch)
+        return
+
+    await update.message.reply_text(
+        "🔙 به منوی اصلی بازگشتید.",
+        reply_markup=branch_menu_kb(branch, user_id),
+    )
+
+
+async def claim_reward_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """دکمه اینلاین قدیمی «✅ نظر دادم» (سازگاری با پیام‌های قبلی)"""
+    query = update.callback_query
+    if query is None:
+        return
+
+    raw_data = str(query.data or "").strip()
+    if not raw_data.startswith("claim_reward"):
+        return
+
+    branch = "tehran" if "tehran" in raw_data else "mashhad"
+
+    try:
+        await query.answer(f"🎉 تبریک! شما {REWARD_POINTS} امتیاز گرفتید")
+    except Exception as e:
+        print(f"❌ خطا در answer کردن دکمه: {e}")
+
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception as e:
+        print(f"ℹ️ حذف دکمه نظر دادم ممکن نشد: {e}")
+
+    await award_claim(context, query.from_user, "google", branch)
+
+
+async def claim_nshn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """دستور تست: /claim_nshn بلافاصله یک امتیاز نشان برای کاربر ثبت می‌کند (فقط ادمین)"""
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        return
+    branch = survey_branch_for(context, user_id)
+    await award_claim(context, update.effective_user, "nshn", branch)
+
+
 async def admin_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
@@ -1054,7 +1308,7 @@ async def admin_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = []
     for admin in admins:
         admin_id = admin["user_id"]
-        # ادمین اصلی و سازنده/مالک ربات قابل حذف نیستند
+
         if admin_id != update.effective_user.id and not is_super_admin(admin_id):
             username = admin.get("username")
             first_name = admin.get("first_name") or ""
@@ -1123,7 +1377,7 @@ async def admin_preupload_phone_code(
 ):
     text = update.message.text
 
-    if text == BTN_ADMIN_BACK_TEXT:
+    if text in (BTN_ADMIN_BACK_TEXT, BTN_BACK_TEXT):
         context.user_data.pop("admin_action", None)
         await admin_command(update, context)
         return
@@ -1169,7 +1423,6 @@ async def admin_preupload_list(update: Update, context: ContextTypes.DEFAULT_TYP
 
     text = "📋 لیست عکس‌های پیش‌آپلود شده:\n\n"
     for photo in photos:
-        photo_id = photo[0]
         phone = photo[1]
         photo_code = photo[2]
         branch = photo[3]
@@ -1192,7 +1445,7 @@ async def handle_admin_management(update: Update, context: ContextTypes.DEFAULT_
         return
 
     if context.user_data.get("admin_action") == "add_admin":
-        if text == BTN_ADMIN_BACK_TEXT:
+        if text in (BTN_ADMIN_BACK_TEXT, BTN_BACK_TEXT):
             context.user_data.pop("admin_action", None)
             await admin_manage(update, context)
             return
@@ -1211,13 +1464,12 @@ async def handle_admin_management(update: Update, context: ContextTypes.DEFAULT_
                     username = user.username
                     first_name = user.first_name
                     last_name = user.last_name
-                except:
+                except Exception:
                     username = None
                     first_name = None
                     last_name = None
 
             else:
-
                 clean_username = text.lstrip("@")
 
                 if not clean_username or not clean_username.replace("_", "").isalnum():
@@ -1234,7 +1486,7 @@ async def handle_admin_management(update: Update, context: ContextTypes.DEFAULT_
                     username = user.username
                     first_name = user.first_name
                     last_name = user.last_name
-                except Exception as e:
+                except Exception:
                     await update.message.reply_text(
                         f"❌ کاربر با یوزرنیم `@{clean_username}` پیدا نشد.\n"
                         "لطفا مطمئن شوید یوزرنیم صحیح است.",
@@ -1251,7 +1503,7 @@ async def handle_admin_management(update: Update, context: ContextTypes.DEFAULT_
                     )
                 else:
                     await update.message.reply_text(
-                        f"❌ کاربر قبلا ادمین است یا خطایی رخ داده.",
+                        "❌ کاربر قبلا ادمین است یا خطایی رخ داده.",
                         parse_mode="Markdown",
                     )
             else:
@@ -1275,7 +1527,7 @@ async def handle_admin_management(update: Update, context: ContextTypes.DEFAULT_
         return
 
     if context.user_data.get("admin_action") == "remove_admin":
-        if text == BTN_ADMIN_BACK_TEXT:
+        if text in (BTN_ADMIN_BACK_TEXT, BTN_BACK_TEXT):
             context.user_data.pop("admin_action", None)
             await admin_manage(update, context)
             return
@@ -1286,12 +1538,11 @@ async def handle_admin_management(update: Update, context: ContextTypes.DEFAULT_
             if text.isdigit():
                 admin_id_to_remove = int(text)
             else:
-
                 clean_username = text.lstrip("@")
                 try:
                     user = await context.bot.get_chat(f"@{clean_username}")
                     admin_id_to_remove = user.id
-                except:
+                except Exception:
                     await update.message.reply_text(
                         f"❌ کاربر با یوزرنیم `@{clean_username}` پیدا نشد.",
                         parse_mode="Markdown",
@@ -1312,11 +1563,11 @@ async def handle_admin_management(update: Update, context: ContextTypes.DEFAULT_
 
             if remove_admin(admin_id_to_remove):
                 await update.message.reply_text(
-                    f"✅ ادمین با موفقیت حذف شد.", parse_mode="Markdown"
+                    "✅ ادمین با موفقیت حذف شد.", parse_mode="Markdown"
                 )
             else:
                 await update.message.reply_text(
-                    f"❌ کاربر مورد نظر ادمین نیست.", parse_mode="Markdown"
+                    "❌ کاربر مورد نظر ادمین نیست.", parse_mode="Markdown"
                 )
 
         except ValueError:
@@ -1395,7 +1646,7 @@ async def admin_send_waiting_list(update: Update, context: ContextTypes.DEFAULT_
 
 
 async def admin_reward_claims(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """لیست مشتریانی که دکمه دریافت ۱۰ امتیاز را زده‌اند (برای بررسی نظر ۵ ستاره)"""
+    """لیست مشتریانی که دکمه دریافت امتیاز را زده‌اند (برای بررسی نظر ۵ ستاره)"""
     if not is_admin(update.effective_user.id):
         return
 
@@ -1404,7 +1655,7 @@ async def admin_reward_claims(update: Update, context: ContextTypes.DEFAULT_TYPE
     claims = get_review_rewards(limit=REWARD_CLAIMS_PAGE_SIZE)
 
     lines = [
-        f"🎁 اعلام‌های دریافت {REWARD_POINTS} امتیاز",
+        f"🎁 اعلام‌های دریافت امتیاز",
         "",
         f"📊 کل اعلام‌ها: {stats['total_claims']}",
         f"🆕 اعلام امروز: {stats['claims_today']}",
@@ -1416,12 +1667,13 @@ async def admin_reward_claims(update: Update, context: ContextTypes.DEFAULT_TYPE
         lines.append("هنوز کسی دکمه دریافت امتیاز را نزده است.")
     else:
         for index, claim in enumerate(claims, start=1):
+            source = "نشان" if claim.get("status") == "nshn" else "گوگل مپ"
             lines.append(
                 f"{index}) 👤 {format_user_display(claim['user_id'], claim.get('first_name'), claim.get('username'))}"
             )
             lines.append(
                 f"   📱 شماره: {claim.get('phone') or 'ثبت نشده'}"
-                f" | 📍 {branch_display_name(claim.get('branch'))}"
+                f" | 📍 {branch_display_name(claim.get('branch'))} | 🔖 {source}"
             )
             lines.append(
                 f"   🕐 زمان اعلام: {format_persian_datetime(claim.get('claimed_at'))}"
@@ -1431,7 +1683,7 @@ async def admin_reward_claims(update: Update, context: ContextTypes.DEFAULT_TYPE
         if total > len(claims):
             lines.append(f"… و {total - len(claims)} اعلام قدیمی‌تر.")
         lines.append(
-            "🔹 این افراد اعلام کرده‌اند نظر ۵ ستاره خود را در گوگل مپ ثبت کرده‌اند؛ "
+            "🔹 این افراد اعلام کرده‌اند نظر خود را ثبت کرده‌اند؛ "
             "لطفا ثبت واقعی نظرشان بررسی شود."
         )
 
@@ -1796,103 +2048,6 @@ async def back_to_menu_callback(update: Update, context: ContextTypes.DEFAULT_TY
     )
 
 
-async def claim_reward_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """دکمه «✅ نظر دادم» بعد از ثبت نظر ۵ ستاره در گوگل مپ"""
-    query = update.callback_query
-    if query is None:
-        return
-
-    user_id = query.from_user.id
-    raw_data = str(query.data or "")
-    branch = "tehran" if "tehran" in raw_data else "mashhad"
-
-    # ۱) اعلان فوری به کاربر: «تبریک، شما ۱۰ امتیاز گرفتید!»
-    try:
-        await query.answer(f"🎉 تبریک! شما {REWARD_POINTS} امتیاز گرفتید")
-    except Exception as e:
-        print(f"ℹ️ answer دکمه نظر دادم ممکن نشد: {e}")
-
-    # ۲) حذف دکمه بعد از استفاده (تا امتیاز تکراری ثبت نشود)
-    try:
-        await query.edit_message_reply_markup(reply_markup=None)
-    except Exception as e:
-        print(f"ℹ️ حذف دکمه نظر دادم ممکن نشد: {e}")
-
-    # ۳) ثبت امتیاز در دیتابیس (خطای احتمالی مانع ارسال پیام نمی‌شود)
-    phone = None
-    try:
-        phone = get_last_request_phone(user_id)
-    except Exception as e:
-        print(f"❌ خطا در خواندن شماره آخرین درخواست کاربر: {e}")
-
-    claims_count = None
-    try:
-        result = save_review_reward(user_id=user_id, phone=phone, branch=branch)
-        claims_count = result.get("claims_count") if result else None
-    except Exception as e:
-        print(f"❌ خطا در ثبت امتیاز نظرسنجی: {e}")
-
-    try:
-        log_user_activity(
-            query.from_user,
-            f"دریافت {REWARD_POINTS} امتیاز هدیه",
-            detail=(
-                f"شعبه {branch_display_name(branch)}"
-                + (f" | تلفن: {phone}" if phone else "")
-            ),
-        )
-    except Exception as e:
-        print(f"❌ خطا در ثبت لاگ دریافت امتیاز: {e}")
-
-    # ۴) پیام تبریک + سپاسگزاری + منوی اصلی (حتماً ارسال می‌شود)
-    await context.bot.send_message(
-        chat_id=user_id, text=reward_received_text(branch, claims_count)
-    )
-    await context.bot.send_message(chat_id=user_id, text=REWARD_THANKS_MESSAGE)
-    await context.bot.send_message(
-        chat_id=user_id,
-        text="لطفا یکی از گزینه‌های زیر را انتخاب کنید:",
-        reply_markup=branch_menu_kb(branch, user_id),
-    )
-
-
-def user_state(context, user_id):
-    """دسترسی به وضعیت (user_data) یک کاربر مشخص
-
-    اگر ادمین از سمت خودش نظرسنجی مشتری را شروع کند، وضعیت باید برای خودِ مشتری
-    تنظیم شود؛ پس از application.user_data استفاده میکنیم.
-    """
-    application = getattr(context, "application", None)
-    user_data_map = getattr(application, "user_data", None)
-    if user_data_map is not None:
-        try:
-            return user_data_map[user_id]
-        except Exception:
-            pass
-    return getattr(context, "user_data", {})
-
-
-def set_survey_step(context, user_id, step=None, **extra):
-    """ثبت مرحله نظرسنجی برای یک کاربر"""
-    state = user_state(context, user_id)
-    if not isinstance(state, dict):
-        return
-
-    state["survey_step"] = step
-    for key, value in extra.items():
-        state[key] = value
-
-
-def survey_branch_for(context, user_id, fallback="mashhad"):
-    """شعبه‌ای که نظرسنجی این کاربر برای آن انجام می‌شود"""
-    state = user_state(context, user_id)
-    branch = state.get("survey_branch") if isinstance(state, dict) else None
-    if not branch:
-        branch = context.user_data.get("branch")
-    branch = branch or fallback
-    return "tehran" if str(branch).lower() == "tehran" else "mashhad"
-
-
 async def start_survey(context: ContextTypes.DEFAULT_TYPE, user_id: int, branch: str):
     """شروع نظرسنجی رضایت: پرسش امتیاز ۵ ستاره"""
     branch = "tehran" if str(branch).lower() == "tehran" else "mashhad"
@@ -1922,7 +2077,7 @@ def survey_step_is_answer(step, text):
     if step == "rating_low":
         return text.count("⭐") > 0 or text == BTN_BACK_TEXT
     if step == "low_rating_reason":
-        # در این مرحله هر پیامی (شامل «بازگشت») توسط هندلر نظرسنجی بررسی می‌شود
+
         return True
     return False
 
@@ -1946,7 +2101,7 @@ async def handle_star_selection(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     if rating > 4:
-        # امتیاز ۵ ستاره فقط از مسیر پرسش اول پذیرفته می‌شود
+
         await update.message.reply_text(
             LOW_RATING_REQUEST_MESSAGE,
             reply_markup=low_rating_kb(),
@@ -1986,7 +2141,6 @@ async def survey_response_handler(update: Update, context: ContextTypes.DEFAULT_
     step = state.get("survey_step") if isinstance(state, dict) else None
     branch = survey_branch_for(context, user_id)
 
-    # ===== پاسخ «بله»: اعلام رضایت ۵ ستاره =====
     if step == "five_star" and text in SURVEY_YES_TEXTS:
         save_survey(user_id, 5, None, branch)
 
@@ -1997,19 +2151,9 @@ async def survey_response_handler(update: Update, context: ContextTypes.DEFAULT_
         )
 
         set_survey_step(context, user_id, None, survey_branch=branch)
-
-        # گیف نظرسنجی با دکمه «✅ نظر دادم» ارسال می‌شود
         await send_review_request_messages(context, user_id, branch)
-
-        # بازگشت به منوی اصلی (کیبورد بله/خیر نظرسنجی از صفحه کاربر پاک می‌شود)
-        await context.bot.send_message(
-            chat_id=user_id,
-            text="لطفا یکی از گزینه‌های زیر را انتخاب کنید:",
-            reply_markup=branch_menu_kb(branch, user_id),
-        )
         return
 
-    # ===== پاسخ «خیر»: دریافت امتیاز ۱ تا ۴ ستاره =====
     if text in SURVEY_NO_TEXTS:
         log_user_activity(
             update.effective_user,
@@ -2033,7 +2177,6 @@ async def survey_response_handler(update: Update, context: ContextTypes.DEFAULT_
         )
         return
 
-    # ===== مرحله ثبت دلیل نارضایتی =====
     if step == "low_rating_reason":
         if text == BTN_BACK_TEXT:
             set_survey_step(context, user_id, None)
@@ -2074,6 +2217,12 @@ async def finish_low_rating_survey(update, context, branch, reason):
         GROUP_MASHHAD_COMPLAINT if branch == "mashhad" else GROUP_TEHRAN_COMPLAINT
     )
 
+    request_phone = None
+    try:
+        request_phone = get_last_request_phone(user_id)
+    except Exception as e:
+        print(f"❌ خطا در خواندن شماره آخرین درخواست کاربر: {e}")
+
     try:
         await context.bot.send_message(
             chat_id=complaint_group,
@@ -2081,6 +2230,7 @@ async def finish_low_rating_survey(update, context, branch, reason):
                 "📝 نارضایتی جدید\n\n"
                 f"👤 کاربر: {getattr(update.effective_user, 'first_name', None) or 'کاربر بدون نام'}\n"
                 f"🆔 آیدی: {user_id}\n"
+                f"📱 شماره: {request_phone if request_phone else 'نامشخص'}\n"
                 f"📍 شعبه: {branch_display_name(branch)}\n"
                 f"⭐ امتیاز: {rating if rating else 'بدون امتیاز'}\n"
                 f"📝 پیام:\n{reason}"
@@ -2092,8 +2242,7 @@ async def finish_low_rating_survey(update, context, branch, reason):
     set_survey_step(context, user_id, None)
 
     await update.message.reply_text(
-        "🙏 با تشکر از شما\n\n"
-        "پیام شما ثبت شد و برای بهبود کیفیت خدمات ما بسیار ارزشمند است.",
+        LOW_RATING_THANKS_MESSAGE,
         reply_markup=branch_menu_kb(branch, user_id),
         parse_mode="Markdown",
     )
@@ -2138,38 +2287,25 @@ async def start(update, context):
         context.user_data["start_message_id"] = msg.message_id
         return
 
-    if "branch" in context.user_data:
-        branch = context.user_data["branch"]
-
-        if branch == "mashhad":
-            reply_markup = mashhad_menu_kb(user_id)
-        else:
-            reply_markup = tehran_menu_kb(user_id)
-
-        msg = await update.message.reply_text(
-            f"سلام {user_name} عزیز!\n\n"
-            "به ربات رستوران پسران کریم خوش آمدید🌹\n\n"
-            "لطفا شعبه مورد نظر خود را انتخاب کنید 👇",
-            reply_markup=reply_markup,
-            parse_mode="Markdown",
-        )
-        context.user_data["start_message_id"] = msg.message_id
+    if context.user_data.get("branch"):
+        reply_markup = branch_menu_kb(context.user_data["branch"], user_id)
     else:
-        msg = await update.message.reply_text(
-            f"سلام {user_name} عزیز!\n\n"
-            "به ربات رستوران پسران کریم خوش آمدید🌹\n\n"
-            "لطفا شعبه مورد نظر خود را انتخاب کنید 👇",
-            reply_markup=branch_kb(),
-            parse_mode="Markdown",
-        )
-        context.user_data["start_message_id"] = msg.message_id
+        reply_markup = branch_kb()
+
+    msg = await update.message.reply_text(
+        f"سلام {user_name} عزیز!\n\n"
+        "به ربات رستوران پسران کریم خوش آمدید🌹\n\n"
+        "لطفا شعبه مورد نظر خود را انتخاب کنید 👇",
+        reply_markup=reply_markup,
+        parse_mode="Markdown",
+    )
+    context.user_data["start_message_id"] = msg.message_id
 
 
 async def check_callback(update, context):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    user_name = query.from_user.first_name or "کاربر گرامی"
 
     if await real_member(context, user_id):
         log_user_activity(query.from_user, "بررسی عضویت در کانال (تایید شد)")
@@ -2177,7 +2313,7 @@ async def check_callback(update, context):
 
         await context.bot.send_message(
             chat_id=user_id,
-            text=f"عضویت شما تایید شد✅\n\n" "لطفا شعبه مورد نظر خود را انتخاب کنید👇",
+            text="عضویت شما تایید شد✅\n\n" "لطفا شعبه مورد نظر خود را انتخاب کنید👇",
             reply_markup=branch_kb(),
             parse_mode="Markdown",
         )
@@ -2223,8 +2359,6 @@ async def handle_admin_response(update: Update, context: ContextTypes.DEFAULT_TY
             f"📸 تعداد عکس‌های ارسال‌شده: {count}"
         )
 
-        # در گروه‌های کاری، پنل مدیریت فرستاده نمی‌شود و کیبورد گیرکرده
-        # بله/خیر از صفحه ادمین پاک می‌شود تا دکمه‌ها بی‌اثر نمانند
         chat_type = getattr(getattr(update, "effective_chat", None), "type", "private")
         if chat_type and chat_type != "private":
             await update.message.reply_text(
@@ -2239,7 +2373,6 @@ async def handle_admin_response(update: Update, context: ContextTypes.DEFAULT_TY
                 parse_mode="Markdown",
             )
 
-        # پیام تحویل عکس حالا داخل کپشن خود عکس است؛ مستقیم نظرسنجی شروع می‌شود
         await start_survey(context, customer_user_id, branch)
         return
 
@@ -2270,7 +2403,6 @@ async def handle_admin_response(update: Update, context: ContextTypes.DEFAULT_TY
                     parse_mode="Markdown",
                 )
 
-            # این درخواست ارسال شد؛ از لیست انتظار گروه شعبه حذف می‌شود
             mark_request_as_sent(phone, photo_code, branch)
 
             context.user_data["admin_upload"]["count"] = (
@@ -2299,11 +2431,7 @@ async def handle_admin_response(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def handle_photo_group_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """پاسخ ادمین به پرسش «عکس دیگری دارید؟» در گروه‌های عکس
-
-    بدون این هندلر، دکمه‌های «بله، عکس دیگری دارم» و «نه، تمام شد» در گروه کاری
-    بی‌اثر می‌ماندند و نظرسنجی مشتری شروع نمی‌شد.
-    """
+    """پاسخ ادمین به پرسش «عکس دیگری دارید؟» در گروه‌های عکس"""
     text = update.message.text
     if text not in (BTN_YES.text, BTN_NO.text):
         return
@@ -2315,27 +2443,244 @@ async def handle_photo_group_text(update: Update, context: ContextTypes.DEFAULT_
 
 
 async def support_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user_name = update.effective_user.first_name or "کاربر گرامی"
-
     log_user_activity(update.effective_user, "درخواست پشتیبانی")
-
-    keyboard = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "🟡 ارتباط با پشتیبانی 🟡",
-                    url=f"https://t.me/{SUPPORT_USERNAME.lstrip('@')}",
-                )
-            ],
-        ]
-    )
 
     await update.message.reply_text(
         "برای ارتباط با پشتیبانی و دریافت راهنمایی، روی دکمه زیر کلیک کنید:",
-        reply_markup=keyboard,
+        reply_markup=link_kb(
+            "🟡 ارتباط با پشتیبانی 🟡",
+            f"https://t.me/{SUPPORT_USERNAME.lstrip('@')}",
+        ),
         parse_mode="Markdown",
     )
+
+
+def social_kb(instagram_url):
+    """دکمه‌های شبکه‌های اجتماعی (اینستاگرام هر شعبه متفاوت است)"""
+    items = [
+        ("🔍 وبسایت رسمی", "https://www.pesaranekarim.rest"),
+        ("📷 اینستاگرام", instagram_url),
+        ("💬 ایکس (توییتر سابق)", "https://x.com/pesaranekarim"),
+        ("🅰️ تردز", "https://threads.net/@pesaranekarim"),
+        ("🎥 تیکتاک", "https://tiktok.com/@pesaranekarim"),
+        ("💬 فیسبوک", "https://facebook.com/pesaranekarim.rest"),
+        ("🔵 لینکدین", "https://linkedin.com/company/pesaranekarim/"),
+        ("💬 کانال تلگرام", "https://t.me/pesaranekarim"),
+        ("💻 ربات تلگرام", "https://t.me/pesaranekarimbot"),
+        ("🔴 کانال آپارات", "https://aparat.com/pesaranekarim"),
+        ("📺 کانال یوتیوب", "https://youtube.com/@pesaranekarim"),
+    ]
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton(label, url=fix_url(url))] for label, url in items]
+    )
+
+
+async def reply_link(update, text, label, url):
+    await update.message.reply_text(
+        text, reply_markup=link_kb(label, url), parse_mode="Markdown"
+    )
+
+
+async def handle_branch_menu_text(update, context, branch, text):
+    """پاسخ به دکمه‌های منوی اصلی شعبه (به‌جز دریافت عکس)"""
+    is_mashhad = branch == "mashhad"
+
+    if text == "اپلیکیشن پسران کریم":
+        await reply_link(
+            update,
+            "لطفا جهت دانلود اپلیکیشن رستوران پسران کریم روی دکمه زیر کلیک فرمایید:",
+            "🟡 دانلود اپلیکیشن پسران کریم 🟡",
+            "www.pesaranekarim.rest/app",
+        )
+
+    elif text == "منو به همراه قیمت":
+        if is_mashhad:
+            await reply_link(
+                update,
+                "لطفا جهت مشاهده منو رستوران پسران کریم مشهد به همراه قیمت، روی دکمه زیر کلیک فرمایید:",
+                "🟡 مشاهده منو به همراه قیمت 🟡",
+                "https://www.pesaranekarim.rest/menu-mashhad",
+            )
+        else:
+            await reply_link(
+                update,
+                "لطفا جهت مشاهده منو رستوران پسران کریم تهران به همراه قیمت، روی دکمه زیر کلیک فرمایید:",
+                "🟡 مشاهده منو به همراه قیمت 🟡",
+                "https://www.pesaranekarim.rest/menu-tehran",
+            )
+
+    elif text == "منو به همراه تصویر":
+        await reply_link(
+            update,
+            "برای مشاهده منو به همراه تصاویر و توضیحات روی دکمه زیر کلیک کنید:",
+            "🟡 مشاهده منو به همراه تصاویر 🟡",
+            "https://www.pesaranekarim.rest/menu",
+        )
+
+    elif text == "سفارش آنلاین":
+        await reply_link(
+            update,
+            "لطفا جهت سفارش آنلاین، روی دکمه زیر کلیک فرمایید:",
+            "🟡 سفارش آنلاین 🟡",
+            "www.pesaranekarim.rest",
+        )
+
+    elif text == "سفارش تلفنی و رزرو مجالس":
+        if is_mashhad:
+            await update.message.reply_text(
+                "تلفن های ما جهت سفارش و ارسال غذا و رزرو مجالس:\n\n"
+                "🟡 05131919\n\n"
+                "🟡 05137530013\n\n"
+                "🟡 05137530014\n\n"
+                "🟡 05137530015",
+                parse_mode="Markdown",
+            )
+        else:
+            await update.message.reply_text(
+                "تلفن های ما جهت سفارش و ارسال غذا و رزرو مجالس:\n\n"
+                "🟡 05131919\n\n"
+                "🟡 02122344513\n\n"
+                "🟡 02129117603\n\n"
+                "(از تلفن ثابت) داخلی اتاق هتل پارسیان آزادی\n\n"
+                "2603",
+                parse_mode="Markdown",
+            )
+
+    elif text == "مسیریابی(لوکیشن)":
+        if is_mashhad:
+            await reply_link(
+                update,
+                "لطفا جهت مسیریابی به رستوران پسران کریم خیام، روی دکمه زیر کلیک فرمایید",
+                "🟡 مسیریابی به رستوران پسران کریم خیام",
+                "https://www.pesaranekarim.rest/direction/mashhad",
+            )
+        else:
+            await reply_link(
+                update,
+                "لطفا جهت مسیریابی به رستوران پسران کریم تهران (هتل پارسیان)، روی دکمه زیر کلیک فرمایید:",
+                "🟡 مسیریابی به رستوران پسران کریم تهران 🟡",
+                "https://www.pesaranekarim.rest/direction/tehran",
+            )
+
+    elif text == "آدرس ما":
+        if is_mashhad:
+            await update.message.reply_text(
+                "🟡 آدرس ما:\n\n 🟡"
+                "مشهد: بلوار خیام به سمت الماس شرق، بین خیام 61و63، ساختمان مروارید، طبقه منفی ۲، رستوران پسران کریم",
+                parse_mode="Markdown",
+            )
+        else:
+            await update.message.reply_text(
+                "🟡 آدرس ما:\n\n"
+                "تقاطع بزرگراه چمران و یادگار امام، هتل پارسیان آزادی، طبقه 26، رستوران پسران کریم",
+                parse_mode="Markdown",
+            )
+
+    elif text == "شبکه های اجتماعی ما":
+        instagram = (
+            "https://instagram.com/pesaranekarim"
+            if is_mashhad
+            else "https://instagram.com/pesaranekarimtehran"
+        )
+        await update.message.reply_text(
+            "برای مشاهده هر بخش روی دکمه مربوطه کلیک کنید:",
+            reply_markup=social_kb(instagram),
+            parse_mode="Markdown",
+        )
+
+    elif text == "تاریخچه پسران کریم":
+        await reply_link(
+            update,
+            "برای مشاهده تاریخچه روی دکمه زیر کلیک کنید:",
+            "🟡 تاریخچه پسران کریم 🟡",
+            "https://www.pesaranekarim.rest/history",
+        )
+
+
+async def process_phone_step(update, context, text):
+    """آخرین مرحله ثبت درخواست عکس: دریافت شماره تلفن"""
+    user_id = update.effective_user.id
+
+    if text == BTN_BACK_TEXT:
+        context.user_data["photo_step"] = "code"
+        await update.message.reply_text(
+            "🔙 به بخش وارد کردن کد عکس بازگشتید.\n" "لطفا کد 4 رقمی عکس را وارد کنید:",
+            reply_markup=ReplyKeyboardMarkup([[BTN_BACK]], resize_keyboard=True),
+            parse_mode="Markdown",
+        )
+        return
+
+    phone = normalize_phone_number(text)
+    if not is_valid_phone_number(phone):
+        await update.message.reply_text(
+            "❌ شماره تلفن وارد شده معتبر نیست!\n\n"
+            "لطفا یک شماره 11 رقمی که با 09 شروع میشود وارد کنید:",
+            reply_markup=ReplyKeyboardMarkup([[BTN_BACK]], resize_keyboard=True),
+        )
+        return
+
+    context.user_data["photo_phone"] = phone
+    context.user_data["photo_step"] = "complete"
+    photo_branch = context.user_data.get("photo_branch", "mashhad")
+    photo_code = context.user_data.get("photo_code")
+    photo_date = context.user_data.get("photo_date")
+
+    preuploaded = get_preuploaded_photo(phone, photo_code, photo_branch)
+    if preuploaded:
+        preupload_id, file_id, file_type, message_id, created_at = preuploaded
+        try:
+            await send_preuploaded_file(
+                context=context,
+                chat_id=user_id,
+                file_id=file_id,
+                file_type=file_type,
+            )
+            mark_preuploaded_as_used(preupload_id)
+            save_photo_request(
+                user_id=user_id,
+                phone=phone,
+                photo_code=photo_code,
+                photo_date=photo_date,
+                branch=photo_branch,
+                status="sent",
+            )
+            await handle_new_photo_request(
+                context,
+                update.effective_user,
+                photo_branch,
+                phone,
+                photo_code,
+                photo_date,
+                photo_sent=True,
+            )
+            await start_survey(context, user_id, photo_branch)
+            context.user_data["photo_step"] = None
+            return
+        except Exception as e:
+            print(f"❌ خطا در ارسال عکس پیش‌آپلود: {e}")
+
+    save_photo_request(
+        user_id=user_id,
+        phone=phone,
+        photo_code=photo_code,
+        photo_date=photo_date,
+        branch=photo_branch,
+    )
+    await handle_new_photo_request(
+        context,
+        update.effective_user,
+        photo_branch,
+        phone,
+        photo_code,
+        photo_date,
+    )
+    await update.message.reply_text(
+        "درخواست شما ثبت شد✅\n\n"
+        "شما در صف انتظار هستید و به محض آماده شدن عکس، فایل آن برای شما ارسال میشود.",
+        reply_markup=branch_menu_kb(photo_branch, user_id),
+        parse_mode="Markdown",
+    )
+    context.user_data["photo_step"] = None
 
 
 async def handle_all_messages(update, context):
@@ -2348,7 +2693,7 @@ async def handle_all_messages(update, context):
                 await context.bot.delete_message(
                     chat_id=user_id, message_id=context.user_data["start_message_id"]
                 )
-        except:
+        except Exception:
             pass
 
         msg = await update.message.reply_text(
@@ -2361,7 +2706,6 @@ async def handle_all_messages(update, context):
         context.user_data["start_message_id"] = msg.message_id
         return
 
-    # ===== ثبت لاگ استفاده از ربات (چه کسی، چه زمانی و با چه تاریخ عضویتی) =====
     log_user_activity(
         update.effective_user,
         build_usage_action(text, context.user_data.get("photo_step")),
@@ -2562,7 +2906,6 @@ async def handle_all_messages(update, context):
     elif text == "🔙 بازگشت به منو":
         context.user_data["in_admin_panel"] = False
 
-        # اگر ادمین وسط ثبت گیف نظرسنجی منصرف شد، حالت انتظار پاک می‌شود
         if context.user_data.get("admin_action") == "review_gif":
             context.user_data.pop("admin_action", None)
             context.user_data.pop("review_gif_branch", None)
@@ -2578,499 +2921,31 @@ async def handle_all_messages(update, context):
     branch = context.user_data.get("branch", "mashhad")
 
     if context.user_data.get("photo_step") == "phone":
-        if text == BTN_BACK_TEXT:
-            context.user_data["photo_step"] = "code"
-            await update.message.reply_text(
-                "🔙 به بخش وارد کردن کد عکس بازگشتید.\n"
-                "لطفا کد 4 رقمی عکس را وارد کنید:",
-                reply_markup=ReplyKeyboardMarkup([[BTN_BACK]], resize_keyboard=True),
-                parse_mode="Markdown",
-            )
-            return
-
-        phone = normalize_phone_number(text)
-        if is_valid_phone_number(phone):
-            context.user_data["photo_phone"] = phone
-            context.user_data["photo_step"] = "complete"
-            photo_branch = context.user_data.get("photo_branch", "mashhad")
-            photo_code = context.user_data.get("photo_code")
-            photo_date = context.user_data.get("photo_date")
-
-            preuploaded = get_preuploaded_photo(phone, photo_code, photo_branch)
-            if preuploaded:
-                preupload_id, file_id, file_type, message_id, created_at = preuploaded
-                try:
-                    await send_preuploaded_file(
-                        context=context,
-                        chat_id=user_id,
-                        file_id=file_id,
-                        file_type=file_type,
-                    )
-                    mark_preuploaded_as_used(preupload_id)
-                    save_photo_request(
-                        user_id=user_id,
-                        phone=phone,
-                        photo_code=photo_code,
-                        photo_date=photo_date,
-                        branch=photo_branch,
-                        status="sent",
-                    )
-                    await handle_new_photo_request(
-                        context,
-                        update.effective_user,
-                        photo_branch,
-                        phone,
-                        photo_code,
-                        photo_date,
-                        photo_sent=True,
-                    )
-                    await start_survey(context, user_id, photo_branch)
-                    context.user_data["photo_step"] = None
-                    return
-                except Exception as e:
-                    print(f"❌ خطا در ارسال عکس پیش‌آپلود: {e}")
-
-            save_photo_request(
-                user_id=user_id,
-                phone=phone,
-                photo_code=photo_code,
-                photo_date=photo_date,
-                branch=photo_branch,
-            )
-            await handle_new_photo_request(
-                context,
-                update.effective_user,
-                photo_branch,
-                phone,
-                photo_code,
-                photo_date,
-            )
-            await update.message.reply_text(
-                "درخواست شما ثبت شد✅\n\n"
-                "شما در صف انتظار هستید و به محض آماده شدن عکس، فایل آن برای شما ارسال میشود.",
-                reply_markup=branch_menu_kb(photo_branch, user_id),
-                parse_mode="Markdown",
-            )
-            context.user_data["photo_step"] = None
-            return
-
-        await update.message.reply_text(
-            "❌ شماره تلفن وارد شده معتبر نیست!\n\n"
-            "لطفا یک شماره 11 رقمی که با 09 شروع میشود وارد کنید:",
-            reply_markup=ReplyKeyboardMarkup([[BTN_BACK]], resize_keyboard=True),
-        )
+        await process_phone_step(update, context, text)
         return
 
-    if branch == "mashhad":
-        if text == "دریافت عکس یادگاری":
-            context.user_data["photo_branch"] = branch
-            context.user_data["photo_step"] = "year"
-            await update.message.reply_text(
-                f"📍 شما در شعبه مشهد (خیام) هستید.\n\n"
-                "🔹 لطفا سالی که عکس را گرفته‌اید انتخاب کنید:",
-                reply_markup=year_kb(),
-                parse_mode="Markdown",
+    if text == "دریافت عکس یادگاری":
+        context.user_data["photo_branch"] = branch
+        context.user_data["photo_step"] = "year"
+        if branch == "mashhad":
+            intro = (
+                "📍 شما در شعبه مشهد (خیام) هستید.\n\n"
+                "🔹 لطفا سالی که عکس را گرفته‌اید انتخاب کنید:"
             )
-            return
-
-        elif text == "اپلیکیشن پسران کریم":
-            if branch == "mashhad":
-                keyboard = InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                "🟡 دانلود اپلیکیشن پسران کریم 🟡",
-                                url="www.pesaranekarim.rest/app",
-                            )
-                        ]
-                    ]
-                )
-                await update.message.reply_text(
-                    "لطفا جهت دانلود اپلیکیشن رستوران پسران کریم روی دکمه زیر کلیک فرمایید:\n\n\n\n",
-                    reply_markup=keyboard,
-                    parse_mode="Markdown",
-                )
-
-        elif text == "منو به همراه قیمت":
-            if branch == "mashhad":
-                keyboard = InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                "🟡 مشاهده منو به همراه قیمت 🟡",
-                                url="https://www.pesaranekarim.rest/menu-mashhad",
-                            )
-                        ]
-                    ]
-                )
-                await update.message.reply_text(
-                    "لطفا جهت مشاهده منو رستوران پسران کریم مشهد به همراه قیمت، روی دکمه زیر کلیک فرمایید:",
-                    reply_markup=keyboard,
-                    parse_mode="Markdown",
-                )
-
-        elif text == "منو به همراه تصویر":
-            keyboard = InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            "🟡 مشاهده منو به همراه تصاویر 🟡",
-                            url="https://www.pesaranekarim.rest/menu",
-                        )
-                    ]
-                ]
-            )
-            await update.message.reply_text(
-                "برای مشاهده منو به همراه تصاویر و توضیحات روی دکمه زیر کلیک کنید:",
-                reply_markup=keyboard,
-                parse_mode="Markdown",
-            )
-
-        elif text == "سفارش آنلاین":
-            keyboard = InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            "🟡 سفارش آنلاین 🟡", url="www.pesaranekarim.rest"
-                        )
-                    ]
-                ]
-            )
-            await update.message.reply_text(
-                "لطفا جهت سفارش آنلاین، روی دکمه زیر کلیک فرمایید:\n\n",
-                reply_markup=keyboard,
-                parse_mode="Markdown",
-            )
-
-        elif text == "سفارش تلفنی و رزرو مجالس":
-            await update.message.reply_text(
-                "تلفن های ما جهت سفارش و ارسال غذا و رزرو مجالس:\n\n"
-                "🟡 05131919\n\n"
-                "🟡 05137530013\n\n"
-                "🟡 05137530014\n\n"
-                "🟡 05137530015",
-                parse_mode="Markdown",
-            )
-
-        elif text == "مسیریابی(لوکیشن)":
-            if branch == "mashhad":
-                keyboard = InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                "🟡 مسیریابی به رستوران پسران کریم خیام",
-                                url="https://www.pesaranekarim.rest/direction/mashhad",
-                            )
-                        ]
-                    ]
-                )
-                await update.message.reply_text(
-                    "لطفا جهت مسیریابی به رستوران پسران کریم خیام، روی دکمه زیر کلیک فرمایید",
-                    reply_markup=keyboard,
-                    parse_mode="Markdown",
-                )
-
-        elif text == "آدرس ما":
-            if branch == "mashhad":
-                await update.message.reply_text(
-                    "🟡 آدرس ما:\n\n 🟡"
-                    "مشهد: بلوار خیام به سمت الماس شرق، بین خیام 61و63، ساختمان مروارید، طبقه منفی ۲، رستوران پسران کریم",
-                    parse_mode="Markdown",
-                )
-
-        elif text == "شبکه های اجتماعی ما":
-            keyboard = InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            "🔍 وبسایت رسمی", url="https://www.pesaranekarim.rest"
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "📷 اینستاگرام", url="https://instagram.com/pesaranekarim"
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "💬 ایکس (توییتر سابق)",
-                            url="X.com/pesaranekarim",
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "🅰️ تردز", url="https://threads.net/@pesaranekarim"
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "🎥 تیکتاک", url="https://tiktok.com/@pesaranekarim"
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "💬 فیسبوک", url="https://facebook.com/pesaranekarim.rest"
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "🔵 لینکدین",
-                            url="https://linkedin.com/company/pesaranekarim/",
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "💬 کانال تلگرام", url="https://t.me/pesaranekarim"
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "💻 ربات تلگرام", url="https://t.me/pesaranekarimbot"
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "🔴 کانال آپارات", url="https://aparat.com/pesaranekarim"
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "📺 کانال یوتیوب", url="https://youtube.com/@pesaranekarim"
-                        )
-                    ],
-                ]
-            )
-
-            await update.message.reply_text(
-                "برای مشاهده هر بخش روی دکمه مربوطه کلیک کنید:",
-                reply_markup=keyboard,
-                parse_mode="Markdown",
-            )
-
-        elif text == "تاریخچه پسران کریم":
-            keyboard = InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            "🟡 تاریخچه پسران کریم 🟡",
-                            url="https://www.pesaranekarim.rest/history",
-                        )
-                    ]
-                ]
-            )
-            await update.message.reply_text(
-                "برای مشاهده تاریخچه روی دکمه زیر کلیک کنید:",
-                reply_markup=keyboard,
-                parse_mode="Markdown",
-            )
-
-    else:
-        if text == "دریافت عکس یادگاری":
-            context.user_data["photo_branch"] = branch
-            context.user_data["photo_step"] = "year"
-            await update.message.reply_text(
+        else:
+            intro = (
                 "📍 شما در شعبه تهران (هتل پارسیان آزادی) هستید.\n\n"
                 "با سلام و احترام\n"
                 "وقتتون بخیر\n\n"
                 "لطفا مرحمت فرمایید کد عکس، تاریخ و شماره تماسی که در پشت برگه یادداشت شده را ارسال فرمایید:\n\n"
-                "🔹 لطفا سالی که عکس را گرفته‌اید انتخاب کنید:",
-                reply_markup=year_kb(),
-                parse_mode="Markdown",
+                "🔹 لطفا سالی که عکس را گرفته‌اید انتخاب کنید:"
             )
-            return
+        await update.message.reply_text(
+            intro, reply_markup=year_kb(), parse_mode="Markdown"
+        )
+        return
 
-        elif text == "اپلیکیشن پسران کریم":
-            if branch == "tehran":
-                keyboard = InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                "🟡 دانلود اپلیکیشن پسران کریم 🟡",
-                                url="www.pesaranekarim.rest/app",
-                            )
-                        ]
-                    ]
-                )
-                await update.message.reply_text(
-                    "لطفا جهت دانلود اپلیکیشن رستوران پسران کریم روی دکمه زیر کلیک فرمایید:\n\n\n\n",
-                    reply_markup=keyboard,
-                    parse_mode="Markdown",
-                )
-
-        elif text == "منو به همراه قیمت":
-            if branch == "tehran":
-                keyboard = InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                "🟡 مشاهده منو به همراه قیمت 🟡",
-                                url="https://www.pesaranekarim.rest/menu-tehran",
-                            )
-                        ]
-                    ]
-                )
-                await update.message.reply_text(
-                    "لطفا جهت مشاهده منو رستوران پسران کریم تهران به همراه قیمت، روی دکمه زیر کلیک فرمایید:\n\n",
-                    reply_markup=keyboard,
-                    parse_mode="Markdown",
-                )
-
-        elif text == "منو به همراه تصویر":
-            keyboard = InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            "🟡 مشاهده منو به همراه تصویر 🟡",
-                            url="https://www.pesaranekarim.rest/menu",
-                        )
-                    ]
-                ]
-            )
-            await update.message.reply_text(
-                "برای مشاهده منو به همراه تضاویر و توضیحات روی دکمه زیر کلیک کنید:",
-                reply_markup=keyboard,
-                parse_mode="Markdown",
-            )
-
-        elif text == "سفارش آنلاین":
-            keyboard = InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            "🟡 سفارش آنلاین 🟡", url="www.pesaranekarim.rest"
-                        )
-                    ]
-                ]
-            )
-            await update.message.reply_text(
-                "لطفا جهت سفارش آنلاین، روی دکمه زیر کلیک فرمایید:\n\n",
-                reply_markup=keyboard,
-                parse_mode="Markdown",
-            )
-
-        elif text == "سفارش تلفنی و رزرو مجالس":
-            await update.message.reply_text(
-                "تلفن های ما جهت سفارش و ارسال غذا و رزرو مجالس:\n\n"
-                "🟡 05131919\n\n"
-                "🟡 02122344513\n\n"
-                "🟡 02129117603\n\n"
-                "(از تلفن ثابت) داخلی اتاق هتل پارسیان آزادی\n\n"
-                "2603",
-                parse_mode="Markdown",
-            )
-
-        elif text == "مسیریابی(لوکیشن)":
-            if branch == "tehran":
-                keyboard = InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                "🟡 مسیریابی به رستوران پسران کریم تهران 🟡",
-                                url="https://www.pesaranekarim.rest/direction/tehran",
-                            )
-                        ]
-                    ]
-                )
-                await update.message.reply_text(
-                    "لطفا جهت مسیریابی به رستوران پسران کریم تهران (هتل پارسیان)، روی دکمه زیر کلیک فرمایید:",
-                    reply_markup=keyboard,
-                    parse_mode="Markdown",
-                )
-
-        elif text == "آدرس ما":
-            if branch == "tehran":
-                await update.message.reply_text(
-                    "🟡 آدرس ما:\n\n"
-                    "تقاطع بزرگراه چمران و یادگار امام، هتل پارسیان آزادی، طبقه 26، رستوران پسران کریم",
-                    parse_mode="Markdown",
-                )
-
-        elif text == "شبکه های اجتماعی ما":
-            keyboard = InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            "🔍 وبسایت رسمی", url="https://www.pesaranekarim.rest"
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "📷 اینستاگرام",
-                            url="https://instagram.com/pesaranekarimtehran",
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "💬 ایکس (توییتر سابق)",
-                            url="X.com/pesaranekarim",
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "🅰️ تردز", url="https://threads.net/@pesaranekarim"
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "🎥 تیکتاک", url="https://tiktok.com/@pesaranekarim"
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "💬 فیسبوک", url="https://facebook.com/pesaranekarim.rest"
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "🔵 لینکدین",
-                            url="https://linkedin.com/company/pesaranekarim/",
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "💬 کانال تلگرام", url="https://t.me/pesaranekarim"
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "💻 ربات تلگرام", url="https://t.me/pesaranekarimbot"
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "🔴 کانال آپارات", url="https://aparat.com/pesaranekarim"
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "📺 کانال یوتیوب", url="https://youtube.com/@pesaranekarim"
-                        )
-                    ],
-                ]
-            )
-
-            await update.message.reply_text(
-                "برای مشاهده هر بخش روی دکمه مربوطه کلیک کنید:",
-                reply_markup=keyboard,
-                parse_mode="Markdown",
-            )
-
-        elif text == "تاریخچه پسران کریم":
-            keyboard = InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            "🟡 تاریخچه پسران کریم 🟡",
-                            url="https://www.pesaranekarim.rest/history",
-                        )
-                    ]
-                ]
-            )
-            await update.message.reply_text(
-                "برای مشاهده تاریخچه روی دکمه زیر کلیک کنید:",
-                reply_markup=keyboard,
-                parse_mode="Markdown",
-            )
+    await handle_branch_menu_text(update, context, branch, text)
 
     if text in get_persian_years() and context.user_data.get("photo_step") == "year":
         context.user_data["photo_year"] = int(text)
@@ -3123,8 +2998,7 @@ async def handle_all_messages(update, context):
             context.user_data["photo_date"] = date_str
 
             await update.message.reply_text(
-                f"تاریخ {year}/{month:02d}/{day:02d} ثبت شد✅\n\n"
-                "لطفا کد 4 رقمی عکس خود را وارد کنید:",
+                f"تاریخ {date_str} ثبت شد✅\n\n" "لطفا کد 4 رقمی عکس خود را وارد کنید:",
                 reply_markup=ReplyKeyboardMarkup([[BTN_BACK]], resize_keyboard=True),
                 parse_mode="Markdown",
             )
@@ -3155,101 +3029,6 @@ async def handle_all_messages(update, context):
             )
         return
 
-    if context.user_data.get("photo_step") == "phone":
-        if text == BTN_BACK_TEXT:
-            context.user_data["photo_step"] = "code"
-            await update.message.reply_text(
-                "🔙 به بخش وارد کردن کد عکس بازگشتید.\n"
-                "لطفا کد 4 رقمی عکس را وارد کنید:",
-                reply_markup=ReplyKeyboardMarkup([[BTN_BACK]], resize_keyboard=True),
-                parse_mode="Markdown",
-            )
-            return
-
-        phone = normalize_phone_number(text)
-        if is_valid_phone_number(phone):
-            context.user_data["photo_phone"] = phone
-            context.user_data["photo_step"] = "complete"
-
-            photo_branch = context.user_data.get("photo_branch", "mashhad")
-            photo_code = context.user_data.get("photo_code")
-            photo_date = context.user_data.get("photo_date")
-
-            preuploaded = get_preuploaded_photo(phone, photo_code, photo_branch)
-
-            if preuploaded:
-                preupload_id, file_id, file_type, message_id, created_at = preuploaded
-
-                try:
-                    await send_preuploaded_file(
-                        context=context,
-                        chat_id=user_id,
-                        file_id=file_id,
-                        file_type=file_type,
-                    )
-
-                    mark_preuploaded_as_used(preupload_id)
-
-                    save_photo_request(
-                        user_id=user_id,
-                        phone=phone,
-                        photo_code=photo_code,
-                        photo_date=photo_date,
-                        branch=photo_branch,
-                        status="sent",
-                    )
-
-                    await handle_new_photo_request(
-                        context,
-                        update.effective_user,
-                        photo_branch,
-                        phone,
-                        photo_code,
-                        photo_date,
-                        photo_sent=True,
-                    )
-
-                    await start_survey(context, user_id, photo_branch)
-                    context.user_data["photo_step"] = None
-                    return
-
-                except Exception as e:
-                    print(f"❌ خطا در ارسال عکس پیش‌آپلود: {e}")
-
-            save_photo_request(
-                user_id=user_id,
-                phone=phone,
-                photo_code=photo_code,
-                photo_date=photo_date,
-                branch=photo_branch,
-            )
-
-            await handle_new_photo_request(
-                context,
-                update.effective_user,
-                photo_branch,
-                phone,
-                photo_code,
-                photo_date,
-            )
-
-            await update.message.reply_text(
-                "درخواست شما ثبت شد✅\n\n"
-                "شما در صف انتظار هستید و به محض آماده شدن عکس، فایل آن برای شما ارسال میشود.",
-                reply_markup=branch_menu_kb(photo_branch, user_id),
-                parse_mode="Markdown",
-            )
-
-            context.user_data["photo_step"] = None
-
-        else:
-            await update.message.reply_text(
-                "❌ شماره تلفن وارد شده معتبر نیست!\n\n"
-                "لطفا یک شماره 11 رقمی که با 09 شروع میشود وارد کنید:",
-                reply_markup=ReplyKeyboardMarkup([[BTN_BACK]], resize_keyboard=True),
-            )
-        return
-
     if text == BTN_BACK_TEXT:
         await update.message.reply_text(
             "🔙 به منوی اصلی بازگشتید.",
@@ -3259,14 +3038,10 @@ async def handle_all_messages(update, context):
 
 
 async def handle_group_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     chat_id = update.message.chat_id
     if chat_id not in [GROUP_MASHHAD_PHOTO, GROUP_TEHRAN_PHOTO]:
         return
 
-    # ✅ در گروه‌های عکس، همه اعضا می‌توانند عکس بفرستند و پیام «دسترسی ندارید» داده نمی‌شود.
-    # برای محدود کردن دوباره به ادمین‌ها، مقدار ALLOW_GROUP_PHOTOS_FOR_ALL را
-    # در فایل config.py روی False بگذارید.
     sender_is_admin = is_admin(update.effective_user.id)
     if not sender_is_admin and not ALLOW_GROUP_PHOTOS_FOR_ALL:
         await update.message.reply_text("شما دسترسی به این بخش ندارید❌")
@@ -3347,20 +3122,17 @@ async def handle_group_photo(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await context.bot.send_photo(
                     chat_id=customer_user_id,
                     photo=file_id,
-                    caption=f"📸 عکس یادگاری شما\n\n"
-                    "از اینکه رستوران پسران کریم را انتخاب کردید سپاسگذاریم🌹",
+                    caption=PHOTO_DELIVERED_MESSAGE,
                     parse_mode="Markdown",
                 )
             else:
                 await context.bot.send_document(
                     chat_id=customer_user_id,
                     document=file_id,
-                    caption=f"📸 عکس یادگاری شما\n\n"
-                    "از اینکه رستوران پسران کریم را انتخاب کردید سپاسگذاریم🌹",
+                    caption=PHOTO_DELIVERED_MESSAGE,
                     parse_mode="Markdown",
                 )
 
-            # این درخواست ارسال شد؛ از لیست انتظار گروه شعبه حذف می‌شود
             mark_request_as_sent(phone, photo_code, branch)
 
             context.user_data["admin_upload"]["count"] = (
@@ -3390,7 +3162,6 @@ async def handle_group_photo(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     caption = (update.message.caption or "").strip()
 
-    # عکس بدون کپشن در گروه کاری: پاسخی داده نمی‌شود تا مزاحم اعضای گروه نشویم
     if not caption:
         return
 
@@ -3524,13 +3295,29 @@ async def handle_group_photo(update: Update, context: ContextTypes.DEFAULT_TYPE)
     conn.close()
 
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """هندلر خطای سراسری برای ثبت و نمایش traceback کامل خطاها"""
+    print("\n🔴❌ Exception جهانی رخ داد:")
+    print(f"  update type: {type(update).__name__ if update else 'None'}")
+    if context.error:
+        print(f"  error: {context.error}")
+        tb = "".join(
+            traceback.format_exception(
+                type(context.error), context.error, context.error.__traceback__
+            )
+        )
+        print(f"  traceback:\n{tb}")
+
+
 def main():
     init_db()
+    reconcile_review_rewards_from_logs()
     init_admin_user()
     app = Application.builder().token(TOKEN).post_init(on_startup).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_command))
+    app.add_handler(CommandHandler("claim_nshn", claim_nshn_command))
 
     app.add_handler(CallbackQueryHandler(check_callback, pattern="check"))
     app.add_handler(CallbackQueryHandler(back_to_menu_callback, pattern="back_to_menu"))
@@ -3543,11 +3330,6 @@ def main():
         )
     )
 
-    # ثبت گیف نظرسنجی توسط ادمین (انیمیشن/ویدیو/فایل در چت خصوصی)
-    # نکته: filters.Document.ANIMATION در python-telegram-bot وجود ندارد؛
-    # گیف‌های معمولی با filters.ANIMATION و گیف‌هایی که به‌صورت فایل ارسال
-    # شوند با filters.Document.ALL پوشش داده می‌شوند (هندلر خودش نوع فایل
-    # را بررسی می‌کند و فایل غیر ویدیویی را با پیام خطا رد می‌کند).
     app.add_handler(
         MessageHandler(
             (filters.ANIMATION | filters.VIDEO | filters.Document.ALL)
@@ -3571,7 +3353,6 @@ def main():
         )
     )
 
-    # دکمه‌های «عکس دیگری دارم / تمام شد» در گروه‌های کاری عکس
     for photo_group_chat_id in (GROUP_MASHHAD_PHOTO, GROUP_TEHRAN_PHOTO):
         app.add_handler(
             MessageHandler(
@@ -3582,14 +3363,29 @@ def main():
             )
         )
 
-    # پیام‌های متنی فقط در چت خصوصی پردازش می‌شوند تا گروه‌ها پیام اضافه (مثل
-    # «شما از کانال خارج شدید») دریافت نکنند
+    app.add_handler(
+        MessageHandler(
+            filters.Regex(rf"^{re.escape(CONTINUE_BUTTON_TEXT)}$")
+            & filters.ChatType.PRIVATE,
+            continue_button_handler,
+        )
+    )
+
+    app.add_handler(
+        MessageHandler(
+            filters.Regex(r"^📊 امتیاز من") & filters.ChatType.PRIVATE,
+            my_points_handler,
+        )
+    )
+
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
             handle_all_messages,
         )
     )
+
+    app.add_error_handler(error_handler)
 
     print("BOT IS UP...")
     app.run_polling()

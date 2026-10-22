@@ -293,9 +293,23 @@ def log_user_activity(user, action, detail=None):
         print(f"❌ خطا در ثبت فعالیت کاربر: {e}")
 
 
+def normalize_branch_name(branch):
+    """حذف تنوع نام شعبه (انگلیسی/فارسی/حروف بزرگ) و برگرداندن نام استاندارد"""
+    value = str(branch or "").strip().lower()
+    if not value:
+        return "mashhad"
+    if value in {"tehran", "تهران"}:
+        return "tehran"
+    if value in {"mashhad", "مشهد"}:
+        return "mashhad"
+    if "tehran" in value or "تهران" in value:
+        return "tehran"
+    return "mashhad"
+
+
 def log_photo_request_activity(user, phone, photo_code, branch):
     """ثبت لاگ ثبت درخواست عکس یادگاری توسط کاربر"""
-    branch_name = "مشهد" if branch == "mashhad" else "تهران"
+    branch_name = "مشهد" if normalize_branch_name(branch) == "mashhad" else "تهران"
     log_user_activity(
         user,
         "ثبت درخواست عکس یادگاری",
@@ -325,12 +339,14 @@ def normalize_group_chat_id(chat_id):
 
 def waiting_group_chat_id(branch):
     """آیدی گروه لیست انتظار هر شعبه"""
+    branch = normalize_branch_name(branch)
     chat_id = GROUP_TEHRAN_WAITING if branch == "tehran" else GROUP_MASHHAD_WAITING
     return normalize_group_chat_id(chat_id)
 
 
 def branch_display_name(branch):
     """نام نمایشی شعبه"""
+    branch = normalize_branch_name(branch)
     return "مشهد (خیام)" if branch == "mashhad" else "تهران (هتل پارسیان آزادی)"
 
 
@@ -719,12 +735,14 @@ REVIEW_GIF_DELETE_TEXTS = {
 
 def google_map_link(branch):
     """لینک نظر دهی در گوگل مپ برای هر شعبه"""
+    branch = normalize_branch_name(branch)
     return GOOGLE_MAP_TEHRAN if branch == "tehran" else GOOGLE_MAP_MASHHAD
 
 
 def review_gif_message_id(branch):
     """شماره پیام گیف نظرسنجی در گروه لیست انتظار شعبه"""
     try:
+        branch = normalize_branch_name(branch)
         if branch == "tehran":
             return int(REVIEW_GIF_MESSAGE_ID_TEHRAN)
         return int(REVIEW_GIF_MESSAGE_ID_MASHHAD)
@@ -745,7 +763,7 @@ def review_gif_kb():
 
 
 def nshn_link_for(branch: str):
-    return NSHN_TEHRAN if str(branch).lower() == "tehran" else NSHN_MASHHAD
+    return NSHN_TEHRAN if normalize_branch_name(branch) == "tehran" else NSHN_MASHHAD
 
 
 def nshn_offer_message(branch: str):
@@ -842,7 +860,7 @@ def survey_branch_for(context, user_id, fallback="mashhad"):
     if not branch:
         branch = context.user_data.get("branch")
     branch = branch or fallback
-    return "tehran" if str(branch).lower() == "tehran" else "mashhad"
+    return normalize_branch_name(branch)
 
 
 async def send_nshn_offer(context, user_id, branch):

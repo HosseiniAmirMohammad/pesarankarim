@@ -86,6 +86,22 @@ assert re.fullmatch(claim_pattern, "claim_reward|tehran")
 assert not re.fullmatch(claim_pattern, "back_to_menu")
 assert not re.fullmatch(claim_pattern, "other")
 
+# Regression check: branch values may arrive in Persian/variant forms.
+# This must still resolve to the correct Google review URL for each branch.
+try:
+    from pesarankarim import google_map_link, normalize_branch_name
+except Exception as exc:  # pragma: no cover - test should fail clearly if import is broken
+    raise AssertionError(f"Importing branch helpers failed: {exc}")
+
+assert normalize_branch_name("tehran") == "tehran"
+assert normalize_branch_name("Tehran") == "tehran"
+assert normalize_branch_name("تهران") == "tehran"
+assert normalize_branch_name("mashhad") == "mashhad"
+assert normalize_branch_name("مشهد") == "mashhad"
+assert google_map_link("tehran") == "https://search.google.com/local/writereview?placeid=ChIJsTjtDAAHjj8RIeGyvM4NXFs"
+assert google_map_link("تهران") == "https://search.google.com/local/writereview?placeid=ChIJsTjtDAAHjj8RIeGyvM4NXFs"
+assert google_map_link("مشهد") == "https://search.google.com/local/writereview?placeid=ChIJ3YrapemRbD8RM2d30ngNSig"
+
 print("\n" + "=" * 60)
 print("📑 Handler Registration Order:")
 print("=" * 60)
