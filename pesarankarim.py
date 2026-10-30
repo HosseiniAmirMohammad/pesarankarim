@@ -3387,6 +3387,11 @@ def main():
 
     app.add_error_handler(error_handler)
 
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
     print("BOT IS UP...")
     app.run_polling()
 
